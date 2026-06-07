@@ -1,0 +1,48 @@
+# fly.toml — starcat-weekly-api
+# 参考 starcat-sharing-api 的配置模式
+
+app = 'starcat-weekly-api'
+primary_region = 'nrt'
+
+[build]
+
+[env]
+  GOGC = '100'
+  GOMAXPROCS = '1'
+  PORT = '5001'
+  STORE_FILE = '/data/weekly.db'
+  # GITHUB_TOKEN 通过 fly secrets set GITHUB_TOKEN=xxx 配置
+
+[processes]
+  app = './server'
+
+[[mounts]]
+  source = 'starcat_weekly_data'
+  destination = '/data'
+
+[http_service]
+  internal_port = 5001
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+  [http_service.concurrency]
+    type = 'connections'
+    hard_limit = 25
+    soft_limit = 20
+
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/healthz'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 256

@@ -1,0 +1,23 @@
+# 二进制产物
+/server
+/bin/
+*.exe
+
+# 本地数据
+weekly.db
+weekly.db-wal
+weekly.db-shm
+*.db
+
+# 周刊缓存
+.weekly-repo/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
