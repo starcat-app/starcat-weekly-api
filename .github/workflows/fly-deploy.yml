@@ -1,5 +1,5 @@
 # See https://fly.io/docs/app-guides/continuous-deployment-with-github-actions/
-# 与 starcat-sharing-api / github-trending-api 保持一致的部署工作流
+# 与 starcat-sharing-api / starcat-trending-api 保持一致的部署工作流
 # FLY_API_TOKEN 需要在 GitHub 仓库 settings 中配置
 
 name: Fly Deploy

@@ -1,83 +1,86 @@
+# flyctl launch added from .gitignore
 # ===========================================
 # Go 相关
 # ===========================================
 # 编译产物
-/starcat-weekly-api
-/bin/
-/build/
-/dist/
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
+bin
+build
+dist
+**/*.exe
+**/*.exe~
+**/*.dll
+**/*.so
+**/*.dylib
 
 # 测试覆盖率
-*.test
-*.out
-coverage.txt
-coverage.html
+**/*.test
+**/*.out
+**/coverage.txt
+**/coverage.html
 
 # 调试信息
-*.dSYM/
+**/*.dSYM
 
 # ===========================================
 # 依赖管理
 # ===========================================
 # 保留 go.mod / go.sum，忽略 vendor（项目未使用）
-/vendor/
+vendor
 
 # ===========================================
 # IDE
 # ===========================================
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-.fleet/
+**/.idea
+**/.vscode
+**/*.swp
+**/*.swo
+**/*~
+**/.fleet
 
 # ===========================================
 # 环境变量 / 密钥
 # ===========================================
-.env
-.env.local
-*.env
-!.env.example
+**/.env
+**/.env.local
+**/*.env
+!**/.env.example
 
 # ===========================================
 # 日志
 # ===========================================
-*.log
-logs/
+**/*.log
+**/logs
 
 # ===========================================
 # 操作系统
 # ===========================================
-.DS_Store
-Thumbs.db
+**/.DS_Store
+**/Thumbs.db
 
 # ===========================================
 # Docker
 # ===========================================
-docker-compose.override.yml
+**/docker-compose.override.yml
 
 # ===========================================
 # 临时文件
 # ===========================================
-*.tmp
-*.bak
-*.swp
+**/*.tmp
+**/*.bak
+**/*.swp
 
 # ===========================================
 # 数据文件
 # ===========================================
 # 运行时生成的 SQLite 数据（可按需保留或忽略）
-weekly.db
-weekly.db-wal
-weekly.db-shm
-*.db
-data.json
+**/weekly.db
+**/weekly.db-wal
+**/weekly.db-shm
+**/*.db
+**/data.json
 
 # 周刊源码缓存（fetcher 拉取 ruanyf/weekly 后存放在此）
-.weekly-repo/
+**/.weekly-repo
+
+# Fly.io 部署配置（避免敏感信息进入镜像）
+fly.toml

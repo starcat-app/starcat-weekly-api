@@ -19,15 +19,15 @@ var githubURLRe = regexp.MustCompile(`^https?://github\.com/([\w.-]+)/([\w.-]+)(
 
 // filterOwners 需要过滤的 owner（非项目，而是平台/组织页）
 var filterOwners = map[string]bool{
-	"ruanyf":       true, // 周刊自身仓库
-	"topics":       true, // github.com/topics/*
-	"sponsors":     true, // github.com/sponsors/*
-	"orgs":         true, // github.com/orgs/*
-	"features":     true, // github.com/features/*
-	"marketplace":  true,
-	"explore":      true,
+	"ruanyf":        true, // 周刊自身仓库
+	"topics":        true, // github.com/topics/*
+	"sponsors":      true, // github.com/sponsors/*
+	"orgs":          true, // github.com/orgs/*
+	"features":      true, // github.com/features/*
+	"marketplace":   true,
+	"explore":       true,
 	"notifications": true,
-	"settings":     true,
+	"settings":      true,
 }
 
 // ParseFile 解析单个 Markdown 文件，提取 GitHub 项目列表
