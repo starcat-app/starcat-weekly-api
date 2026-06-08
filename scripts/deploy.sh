@@ -4,7 +4,9 @@
 # =============================================================================
 #
 # 用法:
-#   ./scripts/deploy.sh v1.1.0
+#   ./scripts/deploy.sh v1.1.0           # 真实部署
+#   ./scripts/deploy.sh --dry-run v1.1.0 # 只 echo, 不实际执行 (用于验证)
+#   DRY_RUN=1 ./scripts/deploy.sh v1.1.0 # 同上, 环境变量形式
 #
 # 前置依赖:
 #   - git (>= 2.x)
@@ -41,7 +43,17 @@
 set -euo pipefail
 
 # =============================================================================
+# --dry-run 参数解析 (必须在 VERSION 之前处理)
+# =============================================================================
+DRY_RUN="${DRY_RUN:-}"
+if [[ "${1:-}" == "--dry-run" ]]; then
+    DRY_RUN=1
+    shift
+fi
+
+# =============================================================================
 # 颜色 (只在 TTY 输出, pipe 时关掉避免污染日志)
+# 必须先初始化, 否则 dry-run banner 引用未定义变量会报错
 # =============================================================================
 if [[ -t 1 ]]; then
     RED='\033[0;31m'
@@ -51,6 +63,21 @@ if [[ -t 1 ]]; then
     NC='\033[0m'
 else
     RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+fi
+
+# dry-run banner (在颜色初始化之后)
+if [[ -n "$DRY_RUN" ]]; then
+    # 把 DRY_RUN 强制设为 1, 避免奇怪的 truthy 值
+    DRY_RUN=1
+    echo -e "${YELLOW}=========================================${NC}"
+    echo -e "${YELLOW}       D R Y   R U N   M O D E${NC}"
+    echo -e "${YELLOW}=========================================${NC}"
+    echo -e "${YELLOW}以下 7 个 side-effect 命令将只 echo, 不会实际执行:${NC}"
+    echo -e "${YELLOW}  git push / gh pr create / gh pr merge${NC}"
+    echo -e "${YELLOW}  git checkout / git pull / git tag / git push tag${NC}"
+    echo -e "${YELLOW}前面 1-7 步 (校验类, 只读) 仍会实际执行${NC}"
+    echo -e "${YELLOW}=========================================${NC}"
+    echo ""
 fi
 
 # 错误退出: 红字 + exit 1
@@ -72,6 +99,31 @@ info() {
 # 警告: 黄色 (不退出)
 warn() {
     echo -e "${YELLOW}!${NC} $*" >&2
+}
+
+# =============================================================================
+# run / run_capture — 干跑模式包装
+# =============================================================================
+# run CMD...: 执行命令; --dry-run 时只 echo 到 stderr, 不执行
+# run_capture CMD...: 同 run, 但 dry-run 时输出一个假的 PR URL 到 stdout
+#                     (给 gh pr create 用, 让脚本能继续跑到结尾)
+# 注意: echo 走 stderr, 避免污染 stdout (例如 gh pr create 的 URL 捕获)
+# =============================================================================
+run() {
+    if [[ -n "$DRY_RUN" ]]; then
+        echo -e "${YELLOW}[DRY-RUN]${NC} $*" >&2
+    else
+        "$@"
+    fi
+}
+
+run_capture() {
+    if [[ -n "$DRY_RUN" ]]; then
+        echo -e "${YELLOW}[DRY-RUN]${NC} $*" >&2
+        echo "https://github.com/dong4j/starcat-weekly-api/pull/DRY-RUN"
+    else
+        "$@"
+    fi
 }
 
 # =============================================================================
@@ -174,7 +226,7 @@ ok "gh CLI authenticated"
 # 8. 推送当前分支 (确保 origin 是最新)
 # =============================================================================
 info "pushing $CURRENT_BRANCH to origin..."
-git push origin "$CURRENT_BRANCH"
+run git push origin "$CURRENT_BRANCH"
 ok "pushed $CURRENT_BRANCH"
 
 # =============================================================================
@@ -219,7 +271,7 @@ EOF
 )
 
 # gh pr create 失败会触发 set -e 退出
-PR_URL=$(gh pr create \
+PR_URL=$(run_capture gh pr create \
     --base main \
     --head "$CURRENT_BRANCH" \
     --title "chore(release): $VERSION 发布" \
@@ -232,22 +284,22 @@ ok "PR created: $PR_URL (PR #$PR_NUM)"
 # 10. 合并 PR (--merge 保留 dev 历史, 不删 dev 分支)
 # =============================================================================
 info "merging PR #$PR_NUM..."
-gh pr merge "$PR_NUM" --merge 2>&1
+run gh pr merge "$PR_NUM" --merge
 ok "PR #$PR_NUM merged"
 
 # =============================================================================
 # 11. 切 main, pull
 # =============================================================================
 info "switching to main and pulling..."
-git checkout main
-git pull origin main --ff-only
+run git checkout main
+run git pull origin main --ff-only
 ok "on main, up-to-date with origin"
 
 # =============================================================================
 # 12. 打 annotated tag (指向 merge commit)
 # =============================================================================
 info "tagging $VERSION..."
-git tag -a "$VERSION" -m "Release $VERSION
+run git tag -a "$VERSION" -m "Release $VERSION
 
 首个使用 scripts/deploy.sh 自动发布的版本。
 - 合并自 $CURRENT_BRANCH (PR #$PR_NUM)
@@ -258,7 +310,7 @@ ok "tagged $VERSION"
 # 13. 推送 tag → 触发 fly-deploy
 # =============================================================================
 info "pushing tag $VERSION to origin (triggers fly-deploy)..."
-git push origin "$VERSION"
+run git push origin "$VERSION"
 ok "tag $VERSION pushed"
 
 # =============================================================================
@@ -275,3 +327,25 @@ echo "  - Fly:     https://fly.io/apps/starcat-weekly-api"
 echo "  - Action:  https://github.com/dong4j/starcat-weekly-api/actions/workflows/fly-deploy.yml"
 echo ""
 echo "  下一步: 等待 fly-deploy workflow 完成 (通常 < 2 分钟)"
+
+# =============================================================================
+# 干跑模式总结
+# =============================================================================
+if [[ -n "$DRY_RUN" ]]; then
+    echo ""
+    echo -e "${YELLOW}=========================================${NC}"
+    echo -e "${YELLOW}  D R Y   R U N   C O M P L E T E${NC}"
+    echo -e "${YELLOW}=========================================${NC}"
+    echo ""
+    echo "以上 13 步中, 1-7 步 (校验类, 只读) 实际执行了"
+    echo "8-13 步 (side-effect) 都只 echo, 没实际执行:"
+    echo "  ✗ git push origin <branch>   没跑"
+    echo "  ✗ gh pr create               没跑 (用了假 URL)"
+    echo "  ✗ gh pr merge                没跑"
+    echo "  ✗ git checkout main          没跑"
+    echo "  ✗ git pull origin main       没跑"
+    echo "  ✗ git tag -a vX.Y.Z          没跑"
+    echo "  ✗ git push origin vX.Y.Z     没跑"
+    echo ""
+    echo "去掉 --dry-run 重跑即可真实部署"
+fi
