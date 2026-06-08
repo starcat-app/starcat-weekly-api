@@ -91,6 +91,11 @@ func (s *SQLiteStore) GetProjects(params model.QueryParams) ([]model.Project, in
 	where := []string{"is_available = 1"}
 	args := []any{}
 
+	// 默认只返回已 enrich 的项目，include_unenriched=true 时不过滤
+	if !params.IncludeUnenriched {
+		where = append(where, "enriched_at IS NOT NULL")
+	}
+
 	if params.Issue == "latest" {
 		// 最新一期
 		where = append(where, "first_issue_number = (SELECT MAX(number) FROM weekly_issues)")

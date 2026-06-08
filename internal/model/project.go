@@ -37,11 +37,12 @@ type ProjectResponse struct {
 
 // QueryParams 项目查询参数
 type QueryParams struct {
-	Page      int
-	PageSize  int
-	Issue     string // "latest" 或具体期号
-	IssueFrom int
-	IssueTo   int
-	Language  string
-	Sort      string
+	Page              int
+	PageSize          int
+	Issue             string // "latest" 或具体期号
+	IssueFrom         int
+	IssueTo           int
+	Language          string
+	Sort              string
+	IncludeUnenriched bool // 默认 false，仅返回已 enrich 的项目
 }

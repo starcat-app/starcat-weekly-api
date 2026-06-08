@@ -70,23 +70,12 @@ func ParseMarkdown(source []byte, issueNumber int) ([]model.Project, error) {
 		}
 		seen[key] = true
 
-		// 提取链接文本作为简短描述
-		desc := extractLinkText(link, source)
-
-		// 尝试提取链接所在段落的上下文作为更详细的描述
-		contextDesc := extractContext(n, source)
-
-		// 优先用上下文描述，兜底用链接文本
-		finalDesc := contextDesc
-		if finalDesc == "" {
-			finalDesc = desc
-		}
-
+		// description 由 enricher 从 GitHub API 填入，此处保持空白
 		projects = append(projects, model.Project{
 			RepoOwner:        owner,
 			RepoName:         repo,
 			URL:              fmt.Sprintf("https://github.com/%s/%s", owner, repo),
-			Description:      finalDesc,
+			Description:      "",
 			FirstIssueNumber: issueNumber,
 			IssueURL:         fmt.Sprintf("https://github.com/ruanyf/weekly/blob/master/docs/issue-%d.md", issueNumber),
 			IsAvailable:      true,
@@ -139,63 +128,4 @@ func isValidRepoPart(s string) bool {
 		return false
 	}
 	return true
-}
-
-// extractLinkText 提取链接节点的纯文本内容
-func extractLinkText(link *ast.Link, source []byte) string {
-	var parts []string
-	for child := link.FirstChild(); child != nil; child = child.NextSibling() {
-		if text, ok := child.(*ast.Text); ok {
-			parts = append(parts, string(text.Segment.Value(source)))
-		}
-	}
-	return strings.TrimSpace(strings.Join(parts, ""))
-}
-
-// extractContext 提取链接所在段落/列表项的上下文文本
-func extractContext(n ast.Node, source []byte) string {
-	// 向上查找父节点：段落或列表项
-	parent := n.Parent()
-	for parent != nil {
-		switch parent.Kind() {
-		case ast.KindParagraph, ast.KindListItem:
-			text := extractNodeText(parent, source, n)
-			text = cleanContext(text)
-			if len(text) > 500 {
-				text = text[:500]
-			}
-			return text
-		}
-		parent = parent.Parent()
-	}
-	return ""
-}
-
-// extractNodeText 提取某个节点下所有文本（排除当前链接节点）
-func extractNodeText(node ast.Node, source []byte, exclude ast.Node) string {
-	var parts []string
-	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
-		if child == exclude {
-			continue
-		}
-		if text, ok := child.(*ast.Text); ok {
-			parts = append(parts, string(text.Segment.Value(source)))
-		}
-		// 递归获取嵌套文本
-		if child.HasChildren() {
-			parts = append(parts, extractNodeText(child, source, exclude))
-		}
-	}
-	return strings.Join(parts, "")
-}
-
-// cleanContext 清理上下文文本
-func cleanContext(text string) string {
-	// 去除图片标记
-	text = regexp.MustCompile(`!\[.*?\]\(.*?\)`).ReplaceAllString(text, "")
-	// 去除链接标记（保留文字）
-	text = regexp.MustCompile(`\[([^\]]*?)\]\(.*?\)`).ReplaceAllString(text, "$1")
-	// 压缩空白
-	text = strings.Join(strings.Fields(text), " ")
-	return strings.TrimSpace(text)
 }

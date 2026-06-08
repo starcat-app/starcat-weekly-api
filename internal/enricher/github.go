@@ -154,13 +154,11 @@ func (e *Enricher) enrichOne(p *model.Project) {
 		return
 	}
 
-	// 用 GitHub 上的官方描述覆盖（如果周刊描述较短或为空）
-	ghDesc := ""
+	// 始终用 GitHub 官方描述覆盖，移除文本解析残留
 	if gh.Description != nil {
-		ghDesc = strings.TrimSpace(*gh.Description)
-	}
-	if ghDesc != "" && (len(ghDesc) > len(p.Description) || p.Description == "") {
-		p.Description = ghDesc
+		p.Description = strings.TrimSpace(*gh.Description)
+	} else {
+		p.Description = ""
 	}
 
 	p.Stars = gh.Stargazers

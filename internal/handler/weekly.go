@@ -124,14 +124,17 @@ func parseQueryParams(r *http.Request) model.QueryParams {
 		pageSize = 20
 	}
 
+	includeUnenriched := q.Get("include_unenriched") == "true"
+
 	return model.QueryParams{
-		Page:      page,
-		PageSize:  pageSize,
-		Issue:     q.Get("issue"),
-		IssueFrom: issueFrom,
-		IssueTo:   issueTo,
-		Language:  q.Get("lang"),
-		Sort:      q.Get("sort"),
+		Page:              page,
+		PageSize:          pageSize,
+		Issue:             q.Get("issue"),
+		IssueFrom:         issueFrom,
+		IssueTo:           issueTo,
+		Language:          q.Get("lang"),
+		Sort:              q.Get("sort"),
+		IncludeUnenriched: includeUnenriched,
 	}
 }
 
