@@ -120,7 +120,8 @@ run() {
 run_capture() {
     if [[ -n "$DRY_RUN" ]]; then
         echo -e "${YELLOW}[DRY-RUN]${NC} $*" >&2
-        echo "https://github.com/dong4j/starcat-weekly-api/pull/DRY-RUN"
+        # 假的 PR URL, PR 号 0 (明显是 fake), 让下游 PR_NUM=$(...|grep ...) 能跑通
+        echo "https://github.com/dong4j/starcat-weekly-api/pull/0"
     else
         "$@"
     fi
