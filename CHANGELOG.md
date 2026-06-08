@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-06-08
+
 ### Added
 - 阮一峰周刊（ruanyf/weekly）每小时自动同步（git clone/pull + goldmark 解析）
 - 项目列表 API（`GET /api/weekly/projects`，支持分页 / 期号 / 语言 / 排序筛选）
@@ -22,5 +24,7 @@
 - Dependabot 自动依赖更新
 - Issue / PR 模板
 - 贡献指南和变更日志
+- 内部版本号包 (`internal/version`, 暴露 `version.Version` 常量)
 
-[Unreleased]: https://github.com/dong4j/starcat-weekly-api/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/dong4j/starcat-weekly-api/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/dong4j/starcat-weekly-api/releases/tag/v1.0.0

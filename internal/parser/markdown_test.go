@@ -57,10 +57,10 @@ func TestParseIssue399(t *testing.T) {
 // TestParseGitHubURL 验证 URL 解析和过滤逻辑
 func TestParseGitHubURL(t *testing.T) {
 	tests := []struct {
-		url         string
-		wantOwner   string
-		wantRepo    string
-		wantValid   bool
+		url       string
+		wantOwner string
+		wantRepo  string
+		wantValid bool
 	}{
 		{"https://github.com/user/repo", "user", "repo", true},
 		{"https://github.com/user/repo.git", "user", "repo", true},
