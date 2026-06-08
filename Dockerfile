@@ -2,7 +2,7 @@
 # 多阶段构建，参考 starcat-sharing-api 风格
 
 # ── Stage 1: 编译 ────────────────────────────────────────
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
