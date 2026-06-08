@@ -1,5 +1,6 @@
 # fly.toml — starcat-weekly-api
-# 参考 starcat-sharing-api 的配置模式
+# 与 starcat-sharing-api / starcat-trending-api 保持一致的 Fly.io 部署配置
+# (端口、env、health check 等参照其他两个项目对齐)
 
 app = 'starcat-weekly-api'
 primary_region = 'nrt'

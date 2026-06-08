@@ -1,5 +1,5 @@
-// Package main 是 starcat-weekly-api 的服务入口
-// 解析阮一峰周刊 (ruanyf/weekly) 推荐的开源项目，对外提供 REST API
+// Package main is the entry point for starcat-weekly-api.
+// It parses ruanyf/weekly recommended GitHub repos and exposes a REST API.
 package main
 
 import (
@@ -16,41 +16,41 @@ import (
 )
 
 func main() {
-	// ── 配置 ──────────────────────────────────────────────
+	// Configuration
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "5003"
 	}
 
-	// STORE_FILE 指向 SQLite 数据库路径，缺省使用当前目录
+	// STORE_FILE points to the SQLite database file
 	dbPath := os.Getenv("STORE_FILE")
 	if dbPath == "" {
 		dbPath = "weekly.db"
 	}
 
-	// 周刊仓库缓存路径
+	// Weekly repo clone/cache directory
 	repoDir := os.Getenv("REPO_DIR")
 	if repoDir == "" {
 		repoDir = ".weekly-repo"
 	}
 
-	// ── 初始化存储 ────────────────────────────────────────
+	// Initialize store
 	s, err := store.NewSQLiteStore(dbPath)
 	if err != nil {
-		log.Fatalf("初始化数据库失败: %v", err)
+		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer s.Close()
 
-	// ── 初始化 enricher ───────────────────────────────────
+	// Initialize enricher
 	enr := enricher.NewEnricher(s)
 
-	// ── 初始化调度器 ──────────────────────────────────────
+	// Initialize scheduler
 	sch := scheduler.New(s, enr, repoDir)
 
-	// ── 初始化 HTTP handler ───────────────────────────────
+	// Initialize HTTP handler
 	wh := handler.NewWeeklyHandler(s, sch.Sync)
 
-	// ── 注册路由 ──────────────────────────────────────────
+	// Register routes (Go 1.22+ style: custom mux + method-aware paths)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler)
 	mux.HandleFunc("GET /api/weekly/projects", wh.HandleProjects)
@@ -58,28 +58,33 @@ func main() {
 	mux.HandleFunc("GET /api/weekly/issues/{number}", wh.HandleIssue)
 	mux.HandleFunc("POST /internal/sync", wh.HandleSync)
 
-	// ── 启动调度器（首次同步 + cron）──────────────────────
+	// Start scheduler (initial sync + cron)
 	go sch.Start()
 
-	// ── 优雅退出 ──────────────────────────────────────────
+	// Graceful shutdown on SIGINT / SIGTERM
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
-		log.Println("收到退出信号，关闭服务...")
+		log.Println("Received shutdown signal, closing service...")
 		sch.Stop()
 		s.Close()
 		os.Exit(0)
 	}()
 
-	// ── 启动 HTTP 服务 ────────────────────────────────────
-	log.Printf("starcat-weekly-api 启动于端口 %s", port)
+	// Start HTTP server
+	log.Printf("starcat-weekly-api starting on port %s", port)
+	log.Printf("Endpoints:")
+	log.Printf("  GET  /healthz                  - Health check")
+	log.Printf("  GET  /api/weekly/projects      - List projects (params: page, page_size, issue, lang, sort)")
+	log.Printf("  GET  /api/weekly/issues        - List issues")
+	log.Printf("  GET  /api/weekly/issues/{n}    - Get issue detail")
+	log.Printf("  POST /internal/sync            - Trigger manual sync")
 	log.Fatal(http.ListenAndServe(":"+port, mux))
 }
 
-// healthzHandler 健康检查（Fly.io http_service.checks 使用）
+// healthzHandler health check (used by Fly.io http_service.checks)
 func healthzHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
 }
-
