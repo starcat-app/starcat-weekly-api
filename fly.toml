@@ -9,7 +9,7 @@ primary_region = 'nrt'
 [env]
   GOGC = '100'
   GOMAXPROCS = '1'
-  PORT = '5001'
+  PORT = '5003'
   STORE_FILE = '/data/weekly.db'
   # GITHUB_TOKEN 通过 fly secrets set GITHUB_TOKEN=xxx 配置
 
@@ -21,7 +21,7 @@ primary_region = 'nrt'
   destination = '/data'
 
 [http_service]
-  internal_port = 5001
+  internal_port = 5003
   force_https = true
   auto_stop_machines = 'stop'
   auto_start_machines = true

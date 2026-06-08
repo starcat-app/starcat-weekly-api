@@ -32,14 +32,14 @@ go mod tidy
 go run ./cmd/server/
 
 # 测试 API
-curl http://localhost:5001/api/weekly/projects?page=1&page_size=5
+curl http://localhost:5003/api/weekly/projects?page=1&page_size=5
 ```
 
 ### Docker
 
 ```bash
 docker build -t starcat-weekly-api .
-docker run -p 5001:5001 \
+docker run -p 5003:5003 \
   -e GITHUB_TOKEN=ghp_xxx \
   -v $(pwd)/data:/data \
   -e STORE_FILE=/data/weekly.db \

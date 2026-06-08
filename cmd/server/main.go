@@ -3,7 +3,6 @@
 package main
 
 import (
-	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -20,7 +19,7 @@ func main() {
 	// ── 配置 ──────────────────────────────────────────────
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "5001"
+		port = "5003"
 	}
 
 	// STORE_FILE 指向 SQLite 数据库路径，缺省使用当前目录
@@ -53,7 +52,6 @@ func main() {
 
 	// ── 注册路由 ──────────────────────────────────────────
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", rootHandler)
 	mux.HandleFunc("GET /healthz", healthzHandler)
 	mux.HandleFunc("GET /api/weekly/projects", wh.HandleProjects)
 	mux.HandleFunc("GET /api/weekly/issues", wh.HandleIssues)
@@ -85,22 +83,3 @@ func healthzHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
 
-// rootHandler 根路由返回服务信息和可用端点
-func rootHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	json.NewEncoder(w).Encode(map[string]any{
-		"service": "starcat-weekly-api",
-		"status":  "ok",
-		"endpoints": map[string]string{
-			"projects":   "GET /api/weekly/projects?page=1&page_size=20",
-			"issues":     "GET /api/weekly/issues",
-			"issue":      "GET /api/weekly/issues/{number}",
-			"sync":       "POST /internal/sync",
-			"health":     "GET /healthz",
-		},
-	})
-}
