@@ -55,32 +55,6 @@ fly volumes create starcat_weekly_data --size 1
 fly deploy
 ```
 
-### 发版流程 (推荐: scripts/deploy.sh)
-
-日常发版**不要**直接 `fly deploy` 或 push 到 main。统一走 `scripts/deploy.sh` 脚本:
-
-```bash
-# 在 dev 分支上, 确认所有改动已 commit + push
-./scripts/deploy.sh v1.1.0
-```
-
-脚本会自动完成:
-1. 校验 (semver 格式 / 分支 / 工作区 / tag 唯一性 / gh 认证)
-2. 推送当前 dev 分支到 origin
-3. 创建 PR `dev → main` (按 PULL_REQUEST_TEMPLATE)
-4. 合并 PR (`--merge`, 保留 dev 历史, **不删 dev 分支**)
-5. 切 main, pull
-6. 打 annotated tag `v1.1.0` (指向 merge commit)
-7. 推送 tag → 自动触发 `.github/workflows/fly-deploy.yml` 完成 Fly.io 部署
-
-**关键约束**:
-- tag 必须在 PR merge 之后打, 这样 tag 指向 main 的 merge commit
-- `fly-deploy.yml` 已改为 tag-only 触发 (`tags: ['v*']`), 避免普通 main push 误部署
-- `go.yml` 也会在 tag 推送后跑一次 CI, 验证 release 包可编译
-- 脚本不可在 `main` / `master` 分支运行
-
-首次部署 / 应急:仍可用 `fly deploy` 手动部署, 不影响 tag 触发的正式流程。
-
 ## API
 
 所有响应均为 JSON 格式，无额外包装层。
