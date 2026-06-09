@@ -73,11 +73,9 @@ docker-compose.override.yml
 # 数据文件
 # ===========================================
 # 运行时生成的 SQLite 数据（可按需保留或忽略）
-weekly.db
-weekly.db-wal
-weekly.db-shm
 *.db
-data.json
+*.db-wal
+*.db-shm
 
 # 周刊源码缓存（fetcher 拉取 ruanyf/weekly 后存放在此）
 .weekly-repo/
