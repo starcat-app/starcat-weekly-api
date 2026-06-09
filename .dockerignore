@@ -84,3 +84,4 @@ vendor
 
 # Fly.io 部署配置（避免敏感信息进入镜像）
 fly.toml
+.env

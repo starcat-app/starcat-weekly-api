@@ -2,37 +2,33 @@
 
 Starcat Weekly 后端服务 —— 解析[阮一峰周刊](https://github.com/ruanyf/weekly)推荐的 GitHub 开源项目，通过 REST API 提供给 [Starcat](https://starcat.ink) 前端。
 
-## 架构
+## R-01 改造说明
 
-```
-ruanyf/weekly (GitHub)
-    │  git clone/pull (每小时 cron)
-    ▼
-[fetcher] ──► [parser: goldmark] ──► [store: SQLite]
-                                       ▲
-                                       │ 异步补全 stars/lang/desc
-                                [enricher: GitHub API]
-                                       │
-                                       ▼
-                               [HTTP API] ──► Starcat 前端
-```
+本项目已完成 R-01 契约升级：
+- **字段补齐**：`projects` 表扩充至 14+5 个 GitHub 元数据字段。
+- **接口版本化**：所有业务接口迁移至 `/api/v1/*`。
+- **响应标准化**：所有响应包入 `{ "schema_version": 1, "data": ... }` envelope。
+- **鉴权机制**：引入 `Bearer Token` 鉴权（需 `Authorization` 头）。
+- **Token 池**：支持 `GITHUB_TOKENS` 多 token 轮换。
 
 ## 快速开始
 
 ### 本地开发
 
 ```bash
-# 设置 GitHub Token（可选，用于 API 补全元数据）
-export GITHUB_TOKEN=ghp_xxx
+# 1. 准备配置文件
+cp .env.example .env
+# 编辑 .env 填充 API_KEYS 和 GITHUB_TOKENS
 
-# 安装依赖
+# 2. 安装依赖
 go mod tidy
 
-# 运行（自动 clone ruanyf/weekly 并启动服务）
+# 3. 运行
 go run ./cmd/server/
 
-# 测试 API
-curl http://localhost:5003/api/weekly/projects?page=1&page_size=5
+# 4. 测试 API（需带 API Key）
+API_KEY="your-key-from-env"
+curl -H "Authorization: Bearer $API_KEY" http://localhost:5003/api/v1/projects?page=1&page_size=5
 ```
 
 ### Docker
@@ -40,85 +36,69 @@ curl http://localhost:5003/api/weekly/projects?page=1&page_size=5
 ```bash
 docker build -t starcat-weekly-api .
 docker run -p 5003:5003 \
-  -e GITHUB_TOKEN=ghp_xxx \
+  --env-file .env \
   -v $(pwd)/data:/data \
-  -e STORE_FILE=/data/weekly.db \
   starcat-weekly-api
 ```
 
 ### 部署到 Fly.io
 
 ```bash
-fly launch                    # 首次创建应用
-fly secrets set GITHUB_TOKEN=ghp_xxx
-fly volumes create starcat_weekly_data --size 1
+# 设置生产环境 Secrets
+fly secrets set \
+  API_KEYS="sk-starcat-prodKey1,..." \
+  GITHUB_TOKENS="ghp_token1,ghp_token2" \
+  STORE_FILE="/data/weekly.db" \
+  REPO_DIR="/data/weekly-repo"
+
 fly deploy
 ```
 
-## API
+## 配置 (.env)
 
-所有响应均为 JSON 格式，无额外包装层。
+| 变量 | 说明 |
+|------|------|
+| `PORT` | 服务端口（默认 5003） |
+| `STORE_FILE` | SQLite 数据库路径 |
+| `REPO_DIR` | 周刊 git clone 存放路径 |
+| `API_KEYS` | 逗号分隔的 API Key 白名单（用于 Bearer 鉴权） |
+| `GITHUB_TOKENS` | 逗号分隔的 GitHub PAT 池 |
+
+## API (v1)
+
+所有业务接口均需携带 `Authorization: Bearer <API_KEY>` 请求头。
 
 ### 项目列表
 
 ```
-GET /api/weekly/projects?page=1&page_size=20
+GET /api/v1/projects?page=1&page_size=20&issue=latest&lang=Go&sort=stars_desc
 ```
 
-参数：
+### 单个项目详情
 
-| 参数 | 说明 |
-|------|------|
-| `page` | 页码（默认 1） |
-| `page_size` | 每页数量（默认 20，最大 100） |
-| `issue` | 筛选期号：`latest` 或具体数字如 `399` |
-| `issue_from` | 起始期号 |
-| `issue_to` | 截止期号 |
-| `lang` | 筛选编程语言 |
-| `sort` | 排序：`stars_desc` / `first_issue_desc`（默认） |
-
-响应示例：
-
-```json
-{
-  "items": [
-    {
-      "id": 1,
-      "owner": "sky22333",
-      "repo": "skyadb",
-      "url": "https://github.com/sky22333/skyadb",
-      "description": "运行在安卓手机上的 ADB 管理工具",
-      "stars": 123,
-      "language": "Java",
-      "first_issue": 399,
-      "issue_url": "https://github.com/ruanyf/weekly/blob/master/docs/issue-399.md"
-    }
-  ],
-  "total": 100,
-  "page": 1,
-  "page_size": 20
-}
+```
+GET /api/v1/projects/{owner}/{repo}
 ```
 
 ### 期号列表
 
 ```
-GET /api/weekly/issues
+GET /api/v1/issues
 ```
 
 ### 某期详情
 
 ```
-GET /api/weekly/issues/399
+GET /api/v1/issues/{number}
 ```
 
-### 手动同步
+### 手动同步 (Admin)
 
 ```
 POST /internal/sync
 ```
 
-### 健康检查
+### 健康检查 (不鉴权)
 
 ```
 GET /healthz

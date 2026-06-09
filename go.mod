@@ -3,6 +3,7 @@ module github.com/dong4j/starcat-weekly-api
 go 1.25.0
 
 require (
+	github.com/joho/godotenv v1.5.1
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/yuin/goldmark v1.8.2
 	modernc.org/sqlite v1.52.0

@@ -36,9 +36,10 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	return s, nil
 }
 
-// migrate 建表（幂等）
+// migrate 建表及迁移
 func (s *SQLiteStore) migrate() error {
-	schema := `
+	// v1 schema
+	schemaV1 := `
 	CREATE TABLE IF NOT EXISTS weekly_issues (
 		number       INTEGER PRIMARY KEY,
 		published_at TEXT,
@@ -63,8 +64,57 @@ func (s *SQLiteStore) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_projects_issue ON projects(first_issue_number DESC);
 	CREATE INDEX IF NOT EXISTS idx_projects_lang  ON projects(language);
 	`
-	_, err := s.db.Exec(schema)
-	return err
+	if _, err := s.db.Exec(schemaV1); err != nil {
+		return err
+	}
+
+	return s.migrateV2()
+}
+
+func (s *SQLiteStore) migrateV2() error {
+	var userVersion int
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&userVersion); err != nil {
+		return err
+	}
+
+	if userVersion < 2 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+
+		alterations := []string{
+			"ALTER TABLE projects ADD COLUMN gh_repo_id        INTEGER",
+			"ALTER TABLE projects ADD COLUMN forks             INTEGER DEFAULT 0",
+			"ALTER TABLE projects ADD COLUMN watchers          INTEGER DEFAULT 0",
+			"ALTER TABLE projects ADD COLUMN subscribers       INTEGER DEFAULT 0",
+			"ALTER TABLE projects ADD COLUMN owner_avatar      TEXT",
+			"ALTER TABLE projects ADD COLUMN homepage          TEXT",
+			"ALTER TABLE projects ADD COLUMN license_spdx      TEXT",
+			"ALTER TABLE projects ADD COLUMN is_archived       INTEGER NOT NULL DEFAULT 0",
+			"ALTER TABLE projects ADD COLUMN is_fork           INTEGER NOT NULL DEFAULT 0",
+			"ALTER TABLE projects ADD COLUMN is_private        INTEGER NOT NULL DEFAULT 0",
+			"ALTER TABLE projects ADD COLUMN default_branch    TEXT",
+			"ALTER TABLE projects ADD COLUMN open_issues       INTEGER DEFAULT 0",
+			"ALTER TABLE projects ADD COLUMN pushed_at         TEXT",
+			"ALTER TABLE projects ADD COLUMN updated_at         TEXT",
+			"ALTER TABLE projects ADD COLUMN created_at         TEXT",
+			"CREATE INDEX IF NOT EXISTS idx_projects_gh_repo_id ON projects(gh_repo_id) WHERE gh_repo_id IS NOT NULL",
+			"PRAGMA user_version = 2",
+		}
+
+		for _, sql := range alterations {
+			if _, err := tx.Exec(sql); err != nil {
+				return fmt.Errorf("exec %s: %w", sql, err)
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // UpsertProject 插入项目，已存在则忽略（保留最早出现的期号）
@@ -143,7 +193,10 @@ func (s *SQLiteStore) GetProjects(params model.QueryParams) ([]model.Project, in
 	offset := (page - 1) * pageSize
 	query := fmt.Sprintf(`
 		SELECT id, repo_owner, repo_name, description, stars, language, topics,
-		       first_issue_number, enriched_at, is_available
+		       first_issue_number, enriched_at, is_available,
+		       gh_repo_id, forks, watchers, subscribers, owner_avatar,
+		       homepage, license_spdx, is_archived, is_fork, is_private,
+		       default_branch, open_issues, pushed_at, updated_at, created_at
 		FROM projects
 		WHERE %s
 		ORDER BY %s
@@ -156,25 +209,78 @@ func (s *SQLiteStore) GetProjects(params model.QueryParams) ([]model.Project, in
 	}
 	defer rows.Close()
 
+	return s.scanProjects(rows, total)
+}
+
+func (s *SQLiteStore) scanProjects(rows *sql.Rows, total int) ([]model.Project, int, error) {
 	items := make([]model.Project, 0)
 	for rows.Next() {
 		var p model.Project
 		var enrichedAt sql.NullString
+		var ghRepoID sql.NullInt64
+		var ownerAvatar, homepage, licenseSpdx, defaultBranch, pushedAt, updatedAt, createdAt sql.NullString
+		var isArchived, isFork, isPrivate int
+
 		if err := rows.Scan(&p.ID, &p.RepoOwner, &p.RepoName, &p.Description,
 			&p.Stars, &p.Language, &p.Topics, &p.FirstIssueNumber,
-			&enrichedAt, &p.IsAvailable); err != nil {
+			&enrichedAt, &p.IsAvailable,
+			&ghRepoID, &p.Forks, &p.Watchers, &p.Subscribers, &ownerAvatar,
+			&homepage, &licenseSpdx, &isArchived, &isFork, &isPrivate,
+			&defaultBranch, &p.OpenIssues, &pushedAt, &updatedAt, &createdAt); err != nil {
 			return nil, 0, err
 		}
 		p.URL = fmt.Sprintf("https://github.com/%s/%s", p.RepoOwner, p.RepoName)
 		p.IssueURL = fmt.Sprintf("https://github.com/ruanyf/weekly/blob/master/docs/issue-%d.md", p.FirstIssueNumber)
+
 		if enrichedAt.Valid {
 			t, _ := time.Parse(time.RFC3339, enrichedAt.String)
 			p.EnrichedAt = &t
 		}
+		if ghRepoID.Valid {
+			p.GhRepoID = ghRepoID.Int64
+		}
+		p.OwnerAvatar = ownerAvatar.String
+		p.Homepage = homepage.String
+		p.LicenseSpdx = licenseSpdx.String
+		p.IsArchived = isArchived == 1
+		p.IsFork = isFork == 1
+		p.IsPrivate = isPrivate == 1
+		p.DefaultBranch = defaultBranch.String
+		p.PushedAt = pushedAt.String
+		p.UpdatedAt = updatedAt.String
+		p.CreatedAt = createdAt.String
+
 		items = append(items, p)
 	}
 
 	return items, total, nil
+}
+
+// GetProjectByOwnerRepo 获取单个项目
+func (s *SQLiteStore) GetProjectByOwnerRepo(owner, repo string) (*model.Project, error) {
+	query := `
+		SELECT id, repo_owner, repo_name, description, stars, language, topics,
+		       first_issue_number, enriched_at, is_available,
+		       gh_repo_id, forks, watchers, subscribers, owner_avatar,
+		       homepage, license_spdx, is_archived, is_fork, is_private,
+		       default_branch, open_issues, pushed_at, updated_at, created_at
+		FROM projects
+		WHERE repo_owner = ? AND repo_name = ?
+	`
+	rows, err := s.db.Query(query, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items, _, err := s.scanProjects(rows, 0)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	return &items[0], nil
 }
 
 // UpsertIssue 插入或更新周刊
@@ -246,36 +352,25 @@ func (s *SQLiteStore) GetLatestIssueNumber() (int, error) {
 
 // GetUnenrichedProjects 获取未补全的项目
 func (s *SQLiteStore) GetUnenrichedProjects(limit int) ([]model.Project, error) {
-	rows, err := s.db.Query(`
+	query := `
 		SELECT id, repo_owner, repo_name, description, stars, language, topics,
-		       first_issue_number, enriched_at, is_available
+		       first_issue_number, enriched_at, is_available,
+		       gh_repo_id, forks, watchers, subscribers, owner_avatar,
+		       homepage, license_spdx, is_archived, is_fork, is_private,
+		       default_branch, open_issues, pushed_at, updated_at, created_at
 		FROM projects
-		WHERE enriched_at IS NULL
+		WHERE enriched_at IS NULL OR gh_repo_id IS NULL
 		ORDER BY id ASC
 		LIMIT ?
-	`, limit)
+	`
+	rows, err := s.db.Query(query, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var projects []model.Project
-	for rows.Next() {
-		var p model.Project
-		var enrichedAt sql.NullString
-		if err := rows.Scan(&p.ID, &p.RepoOwner, &p.RepoName, &p.Description,
-			&p.Stars, &p.Language, &p.Topics, &p.FirstIssueNumber,
-			&enrichedAt, &p.IsAvailable); err != nil {
-			return nil, err
-		}
-		p.URL = fmt.Sprintf("https://github.com/%s/%s", p.RepoOwner, p.RepoName)
-		if enrichedAt.Valid {
-			t, _ := time.Parse(time.RFC3339, enrichedAt.String)
-			p.EnrichedAt = &t
-		}
-		projects = append(projects, p)
-	}
-	return projects, nil
+	items, _, err := s.scanProjects(rows, 0)
+	return items, err
 }
 
 // UpdateProjectMeta 更新项目 GitHub 元数据
@@ -284,9 +379,16 @@ func (s *SQLiteStore) UpdateProjectMeta(p *model.Project) error {
 	_, err := s.db.Exec(`
 		UPDATE projects
 		SET description = ?, stars = ?, language = ?, topics = ?,
-		    enriched_at = ?, is_available = ?
+		    enriched_at = ?, is_available = ?,
+		    gh_repo_id = ?, forks = ?, watchers = ?, subscribers = ?, owner_avatar = ?,
+		    homepage = ?, license_spdx = ?, is_archived = ?, is_fork = ?, is_private = ?,
+		    default_branch = ?, open_issues = ?, pushed_at = ?, updated_at = ?, created_at = ?
 		WHERE id = ?
-	`, p.Description, p.Stars, p.Language, p.Topics, now, boolToInt(p.IsAvailable), p.ID)
+	`, p.Description, p.Stars, p.Language, p.Topics, now, boolToInt(p.IsAvailable),
+		p.GhRepoID, p.Forks, p.Watchers, p.Subscribers, p.OwnerAvatar,
+		p.Homepage, p.LicenseSpdx, boolToInt(p.IsArchived), boolToInt(p.IsFork), boolToInt(p.IsPrivate),
+		p.DefaultBranch, p.OpenIssues, p.PushedAt, p.UpdatedAt, p.CreatedAt,
+		p.ID)
 	return err
 }
 

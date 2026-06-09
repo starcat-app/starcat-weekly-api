@@ -7,6 +7,20 @@
 
 ## [Unreleased]
 
+### Changed (R-01 Transformation)
+- **Breaking Change**: 移除旧版 `/api/weekly/*` 接口，全量迁移至 `/api/v1/*`。
+- **Breaking Change**: 从 `GITHUB_TOKEN` 迁移至 `GITHUB_TOKENS` (Token Pool)。
+- **API 升级**: 所有业务响应现在包入统一的 `{ "schema_version": 1, "data": ... }` envelope。
+- **鉴权增强**: 引入 `Bearer Token` 鉴权，需在请求头中携带 `Authorization: Bearer <key>`。
+- **字段补齐**: `projects` 表新增 14 个 GitHub 元数据字段（`gh_repo_id`, `forks`, `watchers`, `subscribers`, `owner_avatar`, `homepage`, `license_spdx`, `is_archived`, `is_fork`, `is_private`, `default_branch`, `open_issues`, `pushed_at`, `updated_at`, `created_at`）。
+- **配置管理**: 引入 `joho/godotenv` 支持从 `.env` 加载环境变量。
+- **存储演进**: 引入 SQLite `migrateV2` (基于 `PRAGMA user_version`) 自动处理表结构升级。
+- **限流优化**: 接入 Quota-aware Token Pool 和 `RateLimitHandler` 主动退避。
+
+### Added
+- 新增单项目聚合接口 `GET /api/v1/projects/{owner}/{repo}`。
+- 新增 `StarcatRepoCardDTO` 统一 DTO 结构。
+
 ## [1.0.0] - 2026-06-08
 
 ### Added

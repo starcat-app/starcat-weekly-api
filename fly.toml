@@ -11,8 +11,11 @@ primary_region = 'nrt'
   GOGC = '100'
   GOMAXPROCS = '1'
   PORT = '5003'
-  STORE_FILE = '/data/weekly.db'
-  # GITHUB_TOKEN 通过 fly secrets set GITHUB_TOKEN=xxx 配置
+  # 以下变量建议通过 fly secrets set 配置以保持各项目一致性:
+  # API_KEYS="sk-starcat-..."
+  # GITHUB_TOKENS="ghp_...,ghp_..."
+  # STORE_FILE="/data/weekly.db"
+  # REPO_DIR="/data/weekly-repo"
 
 [processes]
   app = './server'

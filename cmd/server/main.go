@@ -7,15 +7,28 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
+
+	"github.com/joho/godotenv"
 
 	"github.com/dong4j/starcat-weekly-api/internal/enricher"
 	"github.com/dong4j/starcat-weekly-api/internal/handler"
+	"github.com/dong4j/starcat-weekly-api/internal/middleware"
 	"github.com/dong4j/starcat-weekly-api/internal/scheduler"
 	"github.com/dong4j/starcat-weekly-api/internal/store"
+	"github.com/dong4j/starcat-weekly-api/internal/tokenpool"
 )
 
 func main() {
+	// Load .env file
+	if err := godotenv.Load(); err != nil {
+		log.Printf("[env] no .env file found, using OS environment only")
+	} else {
+		log.Printf("[env] .env loaded")
+	}
+
 	// Configuration
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -34,6 +47,29 @@ func main() {
 		repoDir = ".weekly-repo"
 	}
 
+	// API Keys for authentication
+	// 注意：NewBearerAuth 内部自动打 [auth] N keys loaded 启动日志（含日志脱敏），无需 main 重复打印。
+	apiKeysStr := os.Getenv("API_KEYS")
+	if apiKeysStr == "" {
+		log.Fatal("API_KEYS env is required (comma-separated list of valid API keys)")
+	}
+	apiKeys := strings.Split(apiKeysStr, ",")
+	authMW := middleware.NewBearerAuth(apiKeys)
+
+	// GitHub Token Pool（兼容旧 GITHUB_TOKEN 单值环境变量）
+	// 注意：tokenpool.New 内部自动打 [token-pool] loaded N tokens 启动日志，无需 main 重复打印。
+	tokensStr := os.Getenv("GITHUB_TOKENS")
+	var tokens []string
+	if tokensStr != "" {
+		tokens = strings.Split(tokensStr, ",")
+	} else if old := os.Getenv("GITHUB_TOKEN"); old != "" {
+		tokens = []string{old}
+		log.Println("[token-pool] migrating legacy GITHUB_TOKEN to GITHUB_TOKENS (single token)")
+	} else {
+		log.Fatal("GITHUB_TOKENS or GITHUB_TOKEN env required (at least 1 GitHub PAT)")
+	}
+	pool := tokenpool.New(tokens)
+
 	// Initialize store
 	s, err := store.NewSQLiteStore(dbPath)
 	if err != nil {
@@ -41,8 +77,9 @@ func main() {
 	}
 	defer s.Close()
 
-	// Initialize enricher
-	enr := enricher.NewEnricher(s)
+	// Initialize enricher with TokenPool and RateLimitHandler
+	rl := enricher.NewRateLimitHandler(720 * time.Millisecond) // 5000/h ≈ 720ms
+	enr := enricher.NewEnricher(s, pool, rl)
 
 	// Initialize scheduler
 	sch := scheduler.New(s, enr, repoDir)
@@ -50,21 +87,28 @@ func main() {
 	// Initialize HTTP handler
 	wh := handler.NewWeeklyHandler(s, sch.Sync)
 
-	// Register routes (Go 1.22+ style: custom mux + method-aware paths)
+	// Register routes (Go 1.22+ style)
+	// 注意：authMW.Wrap 接受 http.Handler。把 method value (func(w,r)) 显式包装为
+	// http.HandlerFunc 让它满足 http.Handler 接口（Go 不支持隐式转换）。
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthzHandler)
-	mux.HandleFunc("GET /api/weekly/projects", wh.HandleProjects)
-	mux.HandleFunc("GET /api/weekly/issues", wh.HandleIssues)
-	mux.HandleFunc("GET /api/weekly/issues/{number}", wh.HandleIssue)
-	mux.HandleFunc("POST /internal/sync", wh.HandleSync)
+	mux.HandleFunc("GET /healthz", wh.Healthz) // Health check (unauthenticated)
+
+	// API V1 Endpoints (authenticated)
+	mux.Handle("GET /api/v1/projects", authMW.Wrap(http.HandlerFunc(wh.HandleProjectsV1)))
+	mux.Handle("GET /api/v1/projects/{owner}/{repo}", authMW.Wrap(http.HandlerFunc(wh.HandleProjectByOwnerRepoV1)))
+	mux.Handle("GET /api/v1/issues", authMW.Wrap(http.HandlerFunc(wh.HandleIssuesV1)))
+	mux.Handle("GET /api/v1/issues/{number}", authMW.Wrap(http.HandlerFunc(wh.HandleIssueV1)))
+
+	// Admin Endpoints (authenticated)
+	mux.Handle("POST /internal/sync", authMW.Wrap(http.HandlerFunc(wh.HandleAdminSync)))
 
 	// Start scheduler (initial sync + cron)
 	go sch.Start()
 
 	// Graceful shutdown on SIGINT / SIGTERM
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		log.Println("Received shutdown signal, closing service...")
 		sch.Stop()
@@ -74,17 +118,11 @@ func main() {
 
 	// Start HTTP server
 	log.Printf("starcat-weekly-api starting on port %s", port)
-	log.Printf("Endpoints:")
-	log.Printf("  GET  /healthz                  - Health check")
-	log.Printf("  GET  /api/weekly/projects      - List projects (params: page, page_size, issue, lang, sort)")
-	log.Printf("  GET  /api/weekly/issues        - List issues")
-	log.Printf("  GET  /api/weekly/issues/{n}    - Get issue detail")
-	log.Printf("  POST /internal/sync            - Trigger manual sync")
+	log.Printf("V1 Endpoints (authenticated):")
+	log.Printf("  GET  /api/v1/projects           - List projects")
+	log.Printf("  GET  /api/v1/projects/{o}/{r}   - Get single project")
+	log.Printf("  GET  /api/v1/issues             - List issues")
+	log.Printf("  GET  /api/v1/issues/{n}         - Get issue detail")
+	log.Printf("  POST /internal/sync             - Trigger manual sync")
 	log.Fatal(http.ListenAndServe(":"+port, mux))
-}
-
-// healthzHandler health check (used by Fly.io http_service.checks)
-func healthzHandler(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
 }

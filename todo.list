@@ -1,0 +1,32 @@
+# Starcat R-01 Weekly API 遗留问题与后续任务
+
+## 1. 环境与依赖 (Immediate)
+- [ ] **执行依赖同步**: 在本地终端执行 `go mod tidy`。之前在会话中由于环境限制未能成功完成 `go.sum` 的更新。
+- [ ] **完善单元测试**: 按照 `R-01-weekly-api-改造方案.md` §9.1 的要求，补充以下测试：
+    - `internal/store/sqlite_test.go`: 验证 `migrateV2` 逻辑及 14 个新字段的读写。
+    - `internal/enricher/github_test.go`: 验证 TokenPool 切换逻辑及 429 退避策略。
+    - `internal/middleware/auth_test.go`: 验证 Bearer 鉴权中间件。
+
+## 2. 部署与运维 (Ops)
+- [ ] **生产环境 Secrets 配置**:
+    ```bash
+    fly secrets set \
+      API_KEYS="sk-starcat-xxx,..." \
+      GITHUB_TOKENS="ghp_xxx,ghp_yyy" \
+      STORE_FILE="/data/weekly.db" \
+      REPO_DIR="/data/weekly-repo" \
+      -a starcat-weekly-api
+    ```
+- [ ] **存量数据回填**: 首次部署后，调用 `POST /internal/sync` 触发全量 Enrich。
+    - 预计耗时: 2000 项目 × 0.7s ≈ 25 分钟。
+    - 验证: 检查 `/api/v1/projects` 响应中 `gh_repo_id` 是否不再为 null。
+
+## 3. 功能增强 (P2 / Future)
+- [ ] **同步进度查询 API**: 实现 `GET /internal/sync/status/{task_id}`，目前 `/internal/sync` 为 fire-and-forget 模式。
+- [ ] **跨 API 配额监控**: 建立监控机制，观察 `starcat-trending-api` 与 `starcat-weekly-api` 是否存在 GitHub PAT 配额竞争。
+- [ ] **GitHub App 接入**: 如果 PAT 维护成本过高，考虑接入 GitHub App 自动刷新 Token。
+- [ ] **Article 模型演进**: 如果周刊未来需要返回「编辑点评」等深度非代码段落，需另起 `/api/v1/weekly/articles` 接口，避免污染 `StarcatRepoCardDTO`。
+
+## 4. 已知约束 (Technical Debt)
+- **SQLite ALTER 限制**: 当前使用 `ALTER TABLE ADD COLUMN`，如果未来需要删除或重命名列，需引入 `CREATE TABLE new + INSERT + DROP old + RENAME` 的重构方案。
+- **Token Pool 选牌策略**: 目前是 Quota-aware 简单排序，未来可根据 Token 来源（如不同地域的 PAT）进行更精细的负载均衡。

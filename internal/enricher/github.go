@@ -1,4 +1,7 @@
-// Package enricher 通过 GitHub API 补全项目的 stars、语言、描述等元数据
+// Package enricher 通过 GitHub API 补全项目的 stars、语言、描述等元数据。
+//
+// R-01 v1.2: 接入 Token Pool（多 PAT 冗余 + Quota-aware）+
+// RateLimitHandler（主动退避）+ 14+5 字段扩拉。
 package enricher
 
 import (
@@ -6,64 +9,60 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/dong4j/starcat-weekly-api/internal/model"
 	"github.com/dong4j/starcat-weekly-api/internal/store"
+	"github.com/dong4j/starcat-weekly-api/internal/tokenpool"
 )
 
-// GitHubRepo API 返回结构（仅取所需字段）
+// GitHubRepo API 返回结构
 type githubRepoResponse struct {
-	FullName    string   `json:"full_name"`
-	Description *string  `json:"description"`
-	Stargazers  int      `json:"stargazers_count"`
-	Language    *string  `json:"language"`
-	Topics      []string `json:"topics"`
-	Message     string   `json:"message"` // 错误信息
+	ID            int64    `json:"id"`
+	FullName      string   `json:"full_name"`
+	Description   *string  `json:"description"`
+	Stargazers    int      `json:"stargazers_count"`
+	Forks         int      `json:"forks_count"`
+	Watchers      int      `json:"watchers_count"`
+	Subscribers   int      `json:"subscribers_count"`
+	Language      *string  `json:"language"`
+	Topics        []string `json:"topics"`
+	Homepage      *string  `json:"homepage"`
+	License       *struct {
+		SpdxID *string `json:"spdx_id"`
+	} `json:"license"`
+	Archived      bool   `json:"archived"`
+	Fork          bool   `json:"fork"`
+	Private       bool   `json:"private"`
+	DefaultBranch string `json:"default_branch"`
+	OpenIssues    int    `json:"open_issues_count"`
+	PushedAt      string `json:"pushed_at"`
+	UpdatedAt     string `json:"updated_at"`
+	CreatedAt     string `json:"created_at"`
+	Owner         *struct {
+		AvatarURL *string `json:"avatar_url"`
+	} `json:"owner"`
+	Message string `json:"message"`
 }
 
-// Enricher GitHub 元数据补全器
+// Enricher GitHub 元数据补全器。
+// 持有 Token Pool（多 PAT 池）+ RateLimitHandler（请求间隔 + 主动暂停）。
 type Enricher struct {
 	store   store.Store
 	client  *http.Client
-	token   string
-	limiter *rateLimiter
+	pool    *tokenpool.Pool
+	limiter *RateLimitHandler
 }
 
-// rateLimiter 简易令牌桶限速器（5000 次/小时）
-type rateLimiter struct {
-	interval time.Duration
-	mu       sync.Mutex
-	last     time.Time
-}
-
-func newRateLimiter(perHour int) *rateLimiter {
-	return &rateLimiter{
-		interval: time.Hour / time.Duration(perHour),
-	}
-}
-
-func (rl *rateLimiter) wait() {
-	rl.mu.Lock()
-	elapsed := time.Since(rl.last)
-	if elapsed < rl.interval {
-		time.Sleep(rl.interval - elapsed)
-	}
-	rl.last = time.Now()
-	rl.mu.Unlock()
-}
-
-// NewEnricher 创建补全器
-func NewEnricher(s store.Store) *Enricher {
-	token := os.Getenv("GITHUB_TOKEN")
+// NewEnricher 创建补全器。
+func NewEnricher(s store.Store, pool *tokenpool.Pool, rl *RateLimitHandler) *Enricher {
 	return &Enricher{
 		store:   s,
 		client:  &http.Client{Timeout: 15 * time.Second},
-		token:   token,
-		limiter: newRateLimiter(5000),
+		pool:    pool,
+		limiter: rl,
 	}
 }
 
@@ -105,9 +104,35 @@ func (e *Enricher) EnrichBatch() {
 	}()
 }
 
-// enrichOne 补全单个项目
+// enrichOne 补全单个项目。
+//
+// 流程：
+//  1. PickBest 拿 Quota-aware token；nil 则 sleep 到池的 EarliestReset。
+//  2. RateLimitHandler.Wait() 阻塞到允许发起请求。
+//  3. 调 GET /repos/{o}/{r}，UpdateFromResponse 让 pool 感知 quota / dead。
+//  4. 按 status 分支：200 写库 / 404 标 unavailable / 429+403 主动 Pause 到 reset 时刻。
+//
+// 注：本函数不做 retry（与现有调用方 EnrichAll 行为兼容，
+// 失败的 project 会保留 enriched_at=NULL，下次 GetUnenrichedProjects 自动重选）。
 func (e *Enricher) enrichOne(p *model.Project) {
-	e.limiter.wait()
+	token := e.pool.PickBest()
+	if token == nil {
+		// 所有 token 都耗尽或已 dead，sleep 到最早的 reset 时刻再退出本轮
+		resetAt := e.pool.EarliestReset()
+		if !resetAt.IsZero() && resetAt.After(time.Now()) {
+			d := time.Until(resetAt)
+			log.Printf("[enricher] no available tokens, sleeping %v until %s",
+				d.Round(time.Second), resetAt.Format(time.RFC3339))
+			time.Sleep(d)
+		} else {
+			// 兜底：池中没有 ResetAt 信息（启动期所有 token remaining=-1 且全 dead），sleep 60s
+			log.Printf("[enricher] no available tokens and no reset info, sleeping 60s")
+			time.Sleep(60 * time.Second)
+		}
+		return
+	}
+
+	e.limiter.Wait()
 
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", p.RepoOwner, p.RepoName)
 	req, err := http.NewRequest("GET", url, nil)
@@ -116,9 +141,7 @@ func (e *Enricher) enrichOne(p *model.Project) {
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "starcat-weekly-api")
-	if e.token != "" {
-		req.Header.Set("Authorization", "Bearer "+e.token)
-	}
+	req.Header.Set("Authorization", "Bearer "+token.Value)
 
 	resp, err := e.client.Do(req)
 	if err != nil {
@@ -126,6 +149,8 @@ func (e *Enricher) enrichOne(p *model.Project) {
 		return
 	}
 	defer resp.Body.Close()
+
+	e.pool.UpdateFromResponse(token, resp)
 
 	// 404 → 标记不可用
 	if resp.StatusCode == http.StatusNotFound {
@@ -136,10 +161,24 @@ func (e *Enricher) enrichOne(p *model.Project) {
 		return
 	}
 
-	// 速率限制 → 等一等再继续
+	// 速率限制 → 主动 Pause 到 reset 时刻（替代固定 sleep 60s）
+	// 这样所有并发 worker 都会自动等到 reset 才继续。
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-		log.Printf("[enricher] 速率限制触发，等待 60s...")
-		time.Sleep(60 * time.Second)
+		pauseUntil := token.ResetAt
+		if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
+			if secs, err := strconv.Atoi(retryAfter); err == nil && secs > 0 {
+				ra := time.Now().Add(time.Duration(secs) * time.Second)
+				if ra.After(pauseUntil) {
+					pauseUntil = ra
+				}
+			}
+		}
+		// 兜底：reset 信息缺失或已过期，至少暂停 60s
+		if pauseUntil.Before(time.Now().Add(60 * time.Second)) {
+			pauseUntil = time.Now().Add(60 * time.Second)
+		}
+		log.Printf("[enricher] 速率限制触发 (%d)，主动暂停到 %s", resp.StatusCode, pauseUntil.Format(time.RFC3339))
+		e.limiter.Pause(pauseUntil)
 		return
 	}
 
@@ -154,14 +193,15 @@ func (e *Enricher) enrichOne(p *model.Project) {
 		return
 	}
 
-	// 始终用 GitHub 官方描述覆盖，移除文本解析残留
+	// 更新字段
+	p.GhRepoID = gh.ID
 	if gh.Description != nil {
 		p.Description = strings.TrimSpace(*gh.Description)
-	} else {
-		p.Description = ""
 	}
-
 	p.Stars = gh.Stargazers
+	p.Forks = gh.Forks
+	p.Watchers = gh.Watchers
+	p.Subscribers = gh.Subscribers
 	if gh.Language != nil {
 		p.Language = *gh.Language
 	}
@@ -169,6 +209,24 @@ func (e *Enricher) enrichOne(p *model.Project) {
 		topicsJSON, _ := json.Marshal(gh.Topics)
 		p.Topics = string(topicsJSON)
 	}
+	if gh.Homepage != nil {
+		p.Homepage = *gh.Homepage
+	}
+	if gh.License != nil && gh.License.SpdxID != nil {
+		p.LicenseSpdx = *gh.License.SpdxID
+	}
+	p.IsArchived = gh.Archived
+	p.IsFork = gh.Fork
+	p.IsPrivate = gh.Private
+	p.DefaultBranch = gh.DefaultBranch
+	p.OpenIssues = gh.OpenIssues
+	p.PushedAt = gh.PushedAt
+	p.UpdatedAt = gh.UpdatedAt
+	p.CreatedAt = gh.CreatedAt
+	if gh.Owner != nil && gh.Owner.AvatarURL != nil {
+		p.OwnerAvatar = *gh.Owner.AvatarURL
+	}
+
 	p.IsAvailable = true
 
 	if err := e.store.UpdateProjectMeta(p); err != nil {

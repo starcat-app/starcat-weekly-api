@@ -81,3 +81,4 @@ data.json
 
 # 周刊源码缓存（fetcher 拉取 ruanyf/weekly 后存放在此）
 .weekly-repo/
+.env

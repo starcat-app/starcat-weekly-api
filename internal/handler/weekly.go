@@ -2,14 +2,21 @@
 package handler
 
 import (
-	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/dong4j/starcat-weekly-api/internal/model"
 	"github.com/dong4j/starcat-weekly-api/internal/store"
 )
+
+// issueDetailData 是 /api/v1/issues/{n} 响应 data 的具体类型。
+// 抽出来让 writeJSONWithMeta 的类型推断更稳，避免 map[string]any 与 envelope JSON 字段名漂移。
+type issueDetailData struct {
+	Issue    *model.WeeklyIssue           `json:"issue"`
+	Projects []model.StarcatRepoCardDTO   `json:"projects"`
+}
 
 // WeeklyHandler Weekly API 处理器
 type WeeklyHandler struct {
@@ -22,63 +29,95 @@ func NewWeeklyHandler(s store.Store, syncFn func()) *WeeklyHandler {
 	return &WeeklyHandler{store: s, sync: syncFn}
 }
 
-// HandleProjects GET /api/weekly/projects — 项目列表（分页 + 筛选）
-func (h *WeeklyHandler) HandleProjects(w http.ResponseWriter, r *http.Request) {
+// HandleProjectsV1 GET /api/v1/projects — 项目列表（分页 + 筛选）
+func (h *WeeklyHandler) HandleProjectsV1(w http.ResponseWriter, r *http.Request) {
 	params := parseQueryParams(r)
 
 	projects, total, err := h.store.GetProjects(params)
 	if err != nil {
 		log.Printf("[handler] GetProjects: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error", nil)
 		return
 	}
 
-	if projects == nil {
-		projects = []model.Project{}
+	cards := make([]model.StarcatRepoCardDTO, 0)
+	for _, p := range projects {
+		cards = append(cards, p.ToRepoCard())
 	}
 
-	writeJSON(w, http.StatusOK, model.ProjectResponse{
-		Items:    projects,
-		Total:    total,
-		Page:     params.Page,
-		PageSize: params.PageSize,
-	})
+	meta := &model.Meta{
+		Page:        params.Page,
+		PageSize:    params.PageSize,
+		Total:       total,
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if params.Page*params.PageSize < total {
+		next := params.Page + 1
+		meta.NextPage = &next
+	}
+
+	writeJSONWithMeta(w, cards, meta)
 }
 
-// HandleIssues GET /api/weekly/issues — 列出所有期号
-func (h *WeeklyHandler) HandleIssues(w http.ResponseWriter, r *http.Request) {
+// HandleProjectByOwnerRepoV1 GET /api/v1/projects/{owner}/{repo} — 获取单 repo 聚合
+func (h *WeeklyHandler) HandleProjectByOwnerRepoV1(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	repo := r.PathValue("repo")
+
+	p, err := h.store.GetProjectByOwnerRepo(owner, repo)
+	if err != nil {
+		log.Printf("[handler] GetProjectByOwnerRepo: %v", err)
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error", nil)
+		return
+	}
+	if p == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Repo not found in weekly archive", map[string]any{
+			"owner": owner,
+			"repo":  repo,
+		})
+		return
+	}
+
+	writeJSON(w, p.ToRepoCard())
+}
+
+// HandleIssuesV1 GET /api/v1/issues — 列出所有期号
+func (h *WeeklyHandler) HandleIssuesV1(w http.ResponseWriter, r *http.Request) {
 	issues, err := h.store.GetIssues()
 	if err != nil {
 		log.Printf("[handler] GetIssues: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error", nil)
 		return
 	}
 	if issues == nil {
 		issues = []model.WeeklyIssue{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"items": issues,
-		"total": len(issues),
+
+	writeJSONWithMeta(w, issues, &model.Meta{
+		Total:       len(issues),
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
-// HandleIssue GET /api/weekly/issues/{number} — 某期详情 + 项目列表
-func (h *WeeklyHandler) HandleIssue(w http.ResponseWriter, r *http.Request) {
+// HandleIssueV1 GET /api/v1/issues/{number} — 某期详情 + 项目列表
+func (h *WeeklyHandler) HandleIssueV1(w http.ResponseWriter, r *http.Request) {
 	numStr := r.PathValue("number")
 	num, err := strconv.Atoi(numStr)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid issue number"})
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid issue number",
+			map[string]any{"param": "number", "got": numStr})
 		return
 	}
 
 	issue, err := h.store.GetIssue(num)
 	if err != nil {
 		log.Printf("[handler] GetIssue: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error", nil)
 		return
 	}
 	if issue == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "issue not found"})
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "issue not found",
+			map[string]any{"number": num})
 		return
 	}
 
@@ -90,23 +129,37 @@ func (h *WeeklyHandler) HandleIssue(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("[handler] GetProjects for issue: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error", nil)
 		return
 	}
-	if projects == nil {
-		projects = []model.Project{}
+
+	cards := make([]model.StarcatRepoCardDTO, 0)
+	for _, p := range projects {
+		cards = append(cards, p.ToRepoCard())
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"issue":    issue,
-		"projects": projects,
+	writeJSON(w, issueDetailData{
+		Issue:    issue,
+		Projects: cards,
 	})
 }
 
-// HandleSync POST /internal/sync — 手动触发同步
-func (h *WeeklyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
+// HandleAdminSync POST /internal/sync — 手动触发同步 (fire-and-forget)
+func (h *WeeklyHandler) HandleAdminSync(w http.ResponseWriter, r *http.Request) {
+	taskID := "task-" + time.Now().UTC().Format("2006-01-02T15:04:05Z") + "-weekly"
 	go h.sync()
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "syncing"})
+
+	writeJSON(w, map[string]string{
+		"task_id":    taskID,
+		"started_at": time.Now().UTC().Format(time.RFC3339),
+		"status":     "running",
+	})
+}
+
+// Healthz GET /healthz - 不鉴权的健康检查
+func (h *WeeklyHandler) Healthz(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ok"))
 }
 
 // parseQueryParams 从 URL Query 解析参数
@@ -135,14 +188,5 @@ func parseQueryParams(r *http.Request) model.QueryParams {
 		Language:          q.Get("lang"),
 		Sort:              q.Get("sort"),
 		IncludeUnenriched: includeUnenriched,
-	}
-}
-
-// writeJSON 写入 JSON 响应
-func writeJSON(w http.ResponseWriter, status int, data any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Printf("[handler] write json: %v", err)
 	}
 }

@@ -29,6 +29,9 @@ type Store interface {
 	// UpdateProjectMeta 更新项目的 GitHub 元数据（stars, language, description 等）
 	UpdateProjectMeta(p *model.Project) error
 
+	// GetProjectByOwnerRepo 获取单个项目
+	GetProjectByOwnerRepo(owner, repo string) (*model.Project, error)
+
 	// Close 关闭数据库连接
 	Close() error
 }
