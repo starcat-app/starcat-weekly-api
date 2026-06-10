@@ -84,7 +84,7 @@ func (p Project) ToRepoCard() StarcatRepoCardDTO {
 		IsFork:      p.IsFork,
 		IsPrivate:   p.IsPrivate,
 		OpenIssues:  p.OpenIssues,
-		HtmlURL:     strPtrOrNil(p.URL),
+		HTMLURL:     strPtrOrNil(p.URL),
 		Weekly: &WeeklyExtension{
 			FirstIssue: p.FirstIssueNumber,
 			IssueURL:   p.IssueURL,
