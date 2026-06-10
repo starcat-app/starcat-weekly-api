@@ -47,27 +47,44 @@ type Project struct {
 	CreatedAt     string `json:"created_at"`
 }
 
+// strPtrOrNil 把 Go 空字符串转成 nil *string。
+//
+// 设计契约（详细设计 §6.1）：StarcatRepoCardDTO 中所有 *string 字段语义是
+// 「缺失即 null」。如果 enricher 还没补全，应该输出 JSON null 而非 ""，否则
+// 前端 Swift `String?` 解码会拿到 Optional("") 触发空 URL 请求 / 空白 UI。
+//
+// 直接 `&p.X` 即便 p.X == "" 也会拿到指向空串的指针，序列化输出为 ""。
+// 此 helper 统一兜底，避免每个字段重复 if-else。
+func strPtrOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 // ToRepoCard converts Project to StarcatRepoCardDTO.
+//
+// 注意：所有 *string 字段都用 strPtrOrNil 包装（详细设计 §6.1）——空串语义等价 null。
 func (p Project) ToRepoCard() StarcatRepoCardDTO {
 	card := StarcatRepoCardDTO{
 		GhRepoID:    p.GhRepoID,
 		FullName:    p.RepoOwner + "/" + p.RepoName,
 		Owner:       p.RepoOwner,
 		Repo:        p.RepoName,
-		OwnerAvatar: &p.OwnerAvatar,
-		Description: &p.Description,
-		Language:    &p.Language,
+		OwnerAvatar: strPtrOrNil(p.OwnerAvatar),
+		Description: strPtrOrNil(p.Description),
+		Language:    strPtrOrNil(p.Language),
 		Stars:       p.Stars,
 		Forks:       p.Forks,
 		Watchers:    p.Watchers,
 		Subscribers: p.Subscribers,
-		Homepage:    &p.Homepage,
-		LicenseSpdx: &p.LicenseSpdx,
+		Homepage:    strPtrOrNil(p.Homepage),
+		LicenseSpdx: strPtrOrNil(p.LicenseSpdx),
 		IsArchived:  p.IsArchived,
 		IsFork:      p.IsFork,
 		IsPrivate:   p.IsPrivate,
 		OpenIssues:  p.OpenIssues,
-		HtmlURL:     &p.URL,
+		HtmlURL:     strPtrOrNil(p.URL),
 		Weekly: &WeeklyExtension{
 			FirstIssue: p.FirstIssueNumber,
 			IssueURL:   p.IssueURL,
@@ -77,18 +94,10 @@ func (p Project) ToRepoCard() StarcatRepoCardDTO {
 	if p.Topics != "" {
 		card.Topics = strings.Split(p.Topics, ",")
 	}
-	if p.DefaultBranch != "" {
-		card.DefaultBranch = &p.DefaultBranch
-	}
-	if p.PushedAt != "" {
-		card.PushedAt = &p.PushedAt
-	}
-	if p.UpdatedAt != "" {
-		card.UpdatedAt = &p.UpdatedAt
-	}
-	if p.CreatedAt != "" {
-		card.CreatedAt = &p.CreatedAt
-	}
+	card.DefaultBranch = strPtrOrNil(p.DefaultBranch)
+	card.PushedAt = strPtrOrNil(p.PushedAt)
+	card.UpdatedAt = strPtrOrNil(p.UpdatedAt)
+	card.CreatedAt = strPtrOrNil(p.CreatedAt)
 
 	return card
 }
