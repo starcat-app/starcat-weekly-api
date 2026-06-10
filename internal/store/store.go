@@ -32,6 +32,17 @@ type Store interface {
 	// GetProjectByOwnerRepo 获取单个项目
 	GetProjectByOwnerRepo(owner, repo string) (*model.Project, error)
 
+	// --- zread 周 trending（v0.5 R-02 新增，决策 ① 独立表）---
+
+	// UpsertZreadTrending upsert 一条 zread trending 记录
+	UpsertZreadTrending(z model.ZreadTrending) error
+
+	// QueryZreadTrending 按 week 参数查 zread 周 trending 列表
+	QueryZreadTrending(week string, limit int) ([]model.ZreadTrending, error)
+
+	// LookupZreadWikiID 反查 zread wiki_id（wiki-api 复用）
+	LookupZreadWikiID(owner, name string) (string, error)
+
 	// Close 关闭数据库连接
 	Close() error
 }

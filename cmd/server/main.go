@@ -86,6 +86,7 @@ func main() {
 
 	// Initialize HTTP handler
 	wh := handler.NewWeeklyHandler(s, sch.Sync)
+	zh := handler.NewZreadTrendingHandler(s)
 
 	// Register routes (Go 1.22+ style)
 	// 注意：authMW.Wrap 接受 http.Handler。把 method value (func(w,r)) 显式包装为
@@ -98,6 +99,8 @@ func main() {
 	mux.Handle("GET /api/v1/projects/{owner}/{repo}", authMW.Wrap(http.HandlerFunc(wh.HandleProjectByOwnerRepoV1)))
 	mux.Handle("GET /api/v1/issues", authMW.Wrap(http.HandlerFunc(wh.HandleIssuesV1)))
 	mux.Handle("GET /api/v1/issues/{number}", authMW.Wrap(http.HandlerFunc(wh.HandleIssueV1)))
+	// v0.5 R-02 新增：zread 周 trending 端点（决策 ② 独立端点，不污染阮一峰现有）
+	mux.Handle("GET /api/v1/trending/zread", authMW.Wrap(http.HandlerFunc(zh.HandleZreadTrendingV1)))
 
 	// Admin Endpoints (authenticated)
 	mux.Handle("POST /internal/sync", authMW.Wrap(http.HandlerFunc(wh.HandleAdminSync)))
@@ -123,6 +126,7 @@ func main() {
 	log.Printf("  GET  /api/v1/projects/{o}/{r}   - Get single project")
 	log.Printf("  GET  /api/v1/issues             - List issues")
 	log.Printf("  GET  /api/v1/issues/{n}         - Get issue detail")
+	log.Printf("  GET  /api/v1/trending/zread     - List zread weekly trending (v0.5)")
 	log.Printf("  POST /internal/sync             - Trigger manual sync")
 	log.Fatal(http.ListenAndServe(":"+port, mux))
 }

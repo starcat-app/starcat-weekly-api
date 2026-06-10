@@ -1,5 +1,38 @@
 # Starcat R-01 Weekly API 遗留问题与后续任务
 
+## R-02. zread 周 trending 接入（v0.5 翻转，2026-06-10）
+
+> **背景**：阮一峰周刊（中文社区精选）和 zread 周榜（GitHub 周 trending 全集）语义互补。
+> 客户端 `WeeklyView` 需要给用户「中文周更内容」统一入口，故把 zread 周 trending
+> 从 starcat-trending-api 迁出，并入 weekly-api（v0.3 写在 trending-api 加 `source` 字段
+> 的方案作废）。
+> 详见 `docs/详细设计/19-wiki集成.md` §8。
+
+### 阻断（已完成）
+- [x] **zread spider** — `internal/spider/zread.go` 拉取 + 解析 + 年份推断
+- [x] **zread_trending 表 schema** — `internal/store/sqlite.go` `migrateV3()` 新建
+      `zread_trending`（11 zread 字段 + 14 enricher 字段 + 3 v0.4.1 字段 + 4 索引）
+- [x] **3 个 store 方法** — `UpsertZreadTrending` / `QueryZreadTrending` / `LookupZreadWikiID`
+- [x] **新端点** — `GET /api/v1/trending/zread?week=this|last|YYYY-MM-DD&limit=20`
+      （决策 ②：独立端点，不动现有 `/api/v1/projects` `/api/v1/issues`）
+
+### 高优（已完成）
+- [x] **年份推断异常告警** — `internal/spider/zread_year_infer.go` 阈值 `>1`，`log.Printf` 告警
+      含原始 MM/DD，2027 年元旦前后可观察
+- [x] **5 case 单测** — `internal/spider/zread_year_infer_test.go`
+- [x] **3 case spider 单测** — `internal/spider/zread_test.go`（成功 / 字段缺失 / code != 0）
+- [x] **funcName 锁** — `internal/scheduler/cron.go` `tryLock("zread")` 防并发跑同一任务
+- [x] **周一 06:00 UTC cron** — `cron.AddFunc("0 0 6 * * 1", s.runZreadFetch)`
+
+### 中优（已完成）
+- [x] **v0.5 banner 文案准备** — 客户端 `Localizable.xcstrings` 由 dong4j 在客户端 PR 阶段添加
+      （`weekly.banner.zread` / `weekly.banner.zread.zh` / `weekly.banner.merged`）
+
+### 待客户端 PR（不在本后端 PR 范围）
+- [ ] **客户端 WeeklyView 加 source picker** — 三选一（阮一峰 / Zread / 合并）
+- [ ] **merged 视图** — `WeeklyMergeService.merge(ruanyifeng:zread:)` 按 `gh_repo_id` 去重，优先阮一峰
+- [ ] **TrendingView 完全恢复 v0.3 之前** — 决策 ③；客户端 PR 阶段统一处理
+
 ## 1. 环境与依赖 (Immediate)
 - [ ] **执行依赖同步**: 在本地终端执行 `go mod tidy`。之前在会话中由于环境限制未能成功完成 `go.sum` 的更新。
 - [ ] **完善单元测试**: 按照 `R-01-weekly-api-改造方案.md` §9.1 的要求，补充以下测试：

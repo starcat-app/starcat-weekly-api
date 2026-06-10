@@ -4,6 +4,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -29,92 +30,267 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	db.SetMaxIdleConns(1)
 
 	s := &SQLiteStore{db: db}
-	if err := s.migrate(); err != nil {
+	if err := s.createSchema(); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
+		return nil, fmt.Errorf("createSchema: %w", err)
 	}
 	return s, nil
 }
 
-// migrate 建表及迁移
-func (s *SQLiteStore) migrate() error {
-	// v1 schema
-	schemaV1 := `
-	CREATE TABLE IF NOT EXISTS weekly_issues (
-		number       INTEGER PRIMARY KEY,
-		published_at TEXT,
-		source_url   TEXT,
-		parsed_at    TEXT
-	);
+// createSchema 初始化 weekly-api 全部数据表与索引。
+//
+// 全新服务,无版本迁移:任何现存 *.db 直接 rm 即可。首启动调一次
+// CREATE TABLE IF NOT EXISTS 即可,不做 destructive migration。
+//
+// 三张表:
+//   - weekly_issues:阮一峰周刊 issue 元数据(number / published_at / source_url / parsed_at)
+//   - projects:周刊内出现的项目(repo_owner + repo_name 唯一),含 enrich 后的 18 个 GitHub 字段
+//   - zread_trending:zread 周 trending 独立表(week_start + owner + name 唯一),与 projects 解耦
+func (s *SQLiteStore) createSchema() error {
+	log.Println("[store] createSchema: weekly_issues + projects + zread_trending")
+	_, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS weekly_issues (
+			number       INTEGER PRIMARY KEY,
+			published_at TEXT,
+			source_url   TEXT,
+			parsed_at    TEXT
+		);
 
-	CREATE TABLE IF NOT EXISTS projects (
-		id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-		repo_owner          TEXT NOT NULL,
-		repo_name           TEXT NOT NULL,
-		description         TEXT DEFAULT '',
-		stars               INTEGER DEFAULT 0,
-		language            TEXT DEFAULT '',
-		topics              TEXT DEFAULT '',
-		first_issue_number  INTEGER REFERENCES weekly_issues(number),
-		enriched_at         TEXT,
-		is_available        INTEGER DEFAULT 1,
-		UNIQUE(repo_owner, repo_name)
-	);
+		CREATE TABLE IF NOT EXISTS projects (
+			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+			repo_owner          TEXT NOT NULL,
+			repo_name           TEXT NOT NULL,
+			description         TEXT DEFAULT '',
+			stars               INTEGER DEFAULT 0,
+			language            TEXT DEFAULT '',
+			topics              TEXT DEFAULT '',
+			first_issue_number  INTEGER REFERENCES weekly_issues(number),
+			enriched_at         TEXT,
+			is_available        INTEGER DEFAULT 1,
+			gh_repo_id          INTEGER,
+			forks               INTEGER DEFAULT 0,
+			watchers            INTEGER DEFAULT 0,
+			subscribers         INTEGER DEFAULT 0,
+			owner_avatar        TEXT,
+			homepage            TEXT,
+			license_spdx        TEXT,
+			is_archived         INTEGER NOT NULL DEFAULT 0,
+			is_fork             INTEGER NOT NULL DEFAULT 0,
+			is_private          INTEGER NOT NULL DEFAULT 0,
+			default_branch      TEXT,
+			open_issues         INTEGER DEFAULT 0,
+			pushed_at           TEXT,
+			updated_at          TEXT,
+			created_at          TEXT,
+			UNIQUE(repo_owner, repo_name)
+		);
 
-	CREATE INDEX IF NOT EXISTS idx_projects_issue ON projects(first_issue_number DESC);
-	CREATE INDEX IF NOT EXISTS idx_projects_lang  ON projects(language);
-	`
-	if _, err := s.db.Exec(schemaV1); err != nil {
-		return err
-	}
+		CREATE INDEX IF NOT EXISTS idx_projects_issue      ON projects(first_issue_number DESC);
+		CREATE INDEX IF NOT EXISTS idx_projects_lang       ON projects(language);
+		CREATE INDEX IF NOT EXISTS idx_projects_gh_repo_id ON projects(gh_repo_id) WHERE gh_repo_id IS NOT NULL;
 
-	return s.migrateV2()
+		CREATE TABLE IF NOT EXISTS zread_trending (
+			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+			week_label          TEXT NOT NULL,
+			week_start          TEXT NOT NULL,
+			week_end            TEXT NOT NULL,
+			rank_in_week        INTEGER NOT NULL,
+			repo_id             TEXT NOT NULL,
+			owner               TEXT NOT NULL,
+			name                TEXT NOT NULL,
+			html_url            TEXT NOT NULL,
+			description         TEXT,
+			description_zh      TEXT,
+			star_count          INTEGER,
+			language            TEXT,
+			topics              TEXT,
+			wiki_id             TEXT,
+			gh_repo_id          INTEGER,
+			forks               INTEGER DEFAULT 0,
+			open_issues         INTEGER DEFAULT 0,
+			watchers            INTEGER DEFAULT 0,
+			subscribers_count   INTEGER DEFAULT 0,
+			pushed_at           TEXT,
+			updated_at          TEXT,
+			created_at          TEXT,
+			license_spdx        TEXT,
+			default_branch      TEXT,
+			is_archived         INTEGER DEFAULT 0,
+			is_fork             INTEGER DEFAULT 0,
+			zread_week_start_raw TEXT,
+			zread_week_end_raw   TEXT,
+			zread_year_inferred  INTEGER,
+			fetched_at          TEXT NOT NULL,
+			UNIQUE(week_start, owner, name)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_zread_trending_owner_repo  ON zread_trending(owner, name);
+		CREATE INDEX IF NOT EXISTS idx_zread_trending_week       ON zread_trending(week_start DESC);
+		CREATE INDEX IF NOT EXISTS idx_zread_trending_wiki       ON zread_trending(wiki_id);
+		CREATE INDEX IF NOT EXISTS idx_zread_trending_gh_repo_id ON zread_trending(gh_repo_id);
+	`)
+	return err
 }
 
-func (s *SQLiteStore) migrateV2() error {
-	var userVersion int
-	if err := s.db.QueryRow("PRAGMA user_version").Scan(&userVersion); err != nil {
-		return err
+// UpsertZreadTrending upsert 一条 zread trending 记录。
+//
+// 唯一键 (week_start, owner, name) — 同一周同一 repo 多次抓取会更新
+// star_count / fetched_at / 推断字段，不会重复插入。
+func (s *SQLiteStore) UpsertZreadTrending(z model.ZreadTrending) error {
+	_, err := s.db.Exec(`
+		INSERT INTO zread_trending
+			(week_label, week_start, week_end, rank_in_week, repo_id, owner, name, html_url,
+			 description, description_zh, star_count, language, topics, wiki_id,
+			 zread_week_start_raw, zread_week_end_raw, zread_year_inferred, fetched_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(week_start, owner, name) DO UPDATE SET
+			week_label          = excluded.week_label,
+			week_end            = excluded.week_end,
+			rank_in_week        = excluded.rank_in_week,
+			repo_id             = excluded.repo_id,
+			html_url            = excluded.html_url,
+			description         = excluded.description,
+			description_zh      = excluded.description_zh,
+			star_count          = excluded.star_count,
+			language            = excluded.language,
+			topics              = excluded.topics,
+			wiki_id             = excluded.wiki_id,
+			zread_week_start_raw = excluded.zread_week_start_raw,
+			zread_week_end_raw   = excluded.zread_week_end_raw,
+			zread_year_inferred  = excluded.zread_year_inferred,
+			fetched_at           = excluded.fetched_at
+	`,
+		z.WeekLabel, z.WeekStart, z.WeekEnd, z.RankInWeek, z.RepoID, z.Owner, z.Name, z.HTMLURL,
+		z.Description, z.DescriptionZh, z.StarCount, z.Language, z.Topics, z.WikiID,
+		z.ZreadWeekStartRaw, z.ZreadWeekEndRaw, z.ZreadYearInferred, z.FetchedAt,
+	)
+	return err
+}
+
+// QueryZreadTrending 按 week 参数查 zread 周 trending 列表。
+//
+// week 取值：
+//   - "this" / 空：取数据库里 week_start 最大的那一周
+//   - "last"：取第二大的 week_start
+//   - ISO 8601 日期（"2026-06-08"）：精确匹配 week_start
+//
+// limit 上限 50。
+func (s *SQLiteStore) QueryZreadTrending(week string, limit int) ([]model.ZreadTrending, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
 	}
 
-	if userVersion < 2 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
+	var query string
+	var args []any
 
-		alterations := []string{
-			"ALTER TABLE projects ADD COLUMN gh_repo_id        INTEGER",
-			"ALTER TABLE projects ADD COLUMN forks             INTEGER DEFAULT 0",
-			"ALTER TABLE projects ADD COLUMN watchers          INTEGER DEFAULT 0",
-			"ALTER TABLE projects ADD COLUMN subscribers       INTEGER DEFAULT 0",
-			"ALTER TABLE projects ADD COLUMN owner_avatar      TEXT",
-			"ALTER TABLE projects ADD COLUMN homepage          TEXT",
-			"ALTER TABLE projects ADD COLUMN license_spdx      TEXT",
-			"ALTER TABLE projects ADD COLUMN is_archived       INTEGER NOT NULL DEFAULT 0",
-			"ALTER TABLE projects ADD COLUMN is_fork           INTEGER NOT NULL DEFAULT 0",
-			"ALTER TABLE projects ADD COLUMN is_private        INTEGER NOT NULL DEFAULT 0",
-			"ALTER TABLE projects ADD COLUMN default_branch    TEXT",
-			"ALTER TABLE projects ADD COLUMN open_issues       INTEGER DEFAULT 0",
-			"ALTER TABLE projects ADD COLUMN pushed_at         TEXT",
-			"ALTER TABLE projects ADD COLUMN updated_at         TEXT",
-			"ALTER TABLE projects ADD COLUMN created_at         TEXT",
-			"CREATE INDEX IF NOT EXISTS idx_projects_gh_repo_id ON projects(gh_repo_id) WHERE gh_repo_id IS NOT NULL",
-			"PRAGMA user_version = 2",
-		}
-
-		for _, sql := range alterations {
-			if _, err := tx.Exec(sql); err != nil {
-				return fmt.Errorf("exec %s: %w", sql, err)
-			}
-		}
-
-		if err := tx.Commit(); err != nil {
-			return err
-		}
+	switch week {
+	case "", "this":
+		query = `SELECT week_label, week_start, week_end, rank_in_week, repo_id, owner, name, html_url,
+			description, description_zh, star_count, language, topics, wiki_id,
+			gh_repo_id, forks, open_issues, watchers, subscribers_count,
+			pushed_at, updated_at, created_at, license_spdx, default_branch, is_archived, is_fork,
+			zread_week_start_raw, zread_week_end_raw, zread_year_inferred, fetched_at
+			FROM zread_trending
+			WHERE week_start = (SELECT MAX(week_start) FROM zread_trending)
+			ORDER BY rank_in_week ASC LIMIT ?`
+		args = []any{limit}
+	case "last":
+		query = `SELECT week_label, week_start, week_end, rank_in_week, repo_id, owner, name, html_url,
+			description, description_zh, star_count, language, topics, wiki_id,
+			gh_repo_id, forks, open_issues, watchers, subscribers_count,
+			pushed_at, updated_at, created_at, license_spdx, default_branch, is_archived, is_fork,
+			zread_week_start_raw, zread_week_end_raw, zread_year_inferred, fetched_at
+			FROM zread_trending
+			WHERE week_start = (
+				SELECT MAX(week_start) FROM zread_trending
+				WHERE week_start < (SELECT MAX(week_start) FROM zread_trending)
+			)
+			ORDER BY rank_in_week ASC LIMIT ?`
+		args = []any{limit}
+	default:
+		// 精确 ISO 8601 日期匹配
+		query = `SELECT week_label, week_start, week_end, rank_in_week, repo_id, owner, name, html_url,
+			description, description_zh, star_count, language, topics, wiki_id,
+			gh_repo_id, forks, open_issues, watchers, subscribers_count,
+			pushed_at, updated_at, created_at, license_spdx, default_branch, is_archived, is_fork,
+			zread_week_start_raw, zread_week_end_raw, zread_year_inferred, fetched_at
+			FROM zread_trending
+			WHERE week_start = ?
+			ORDER BY rank_in_week ASC LIMIT ?`
+		args = []any{week, limit}
 	}
-	return nil
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return s.scanZreadTrending(rows)
+}
+
+// LookupZreadWikiID 给定 owner/repo 反查 zread wiki_id。
+//
+// 用于 wiki-api 在探测到 zread 未索引时，反向 weekly-api 校验"zread 是否曾收录过这个 repo"。
+// 返回 "" 表示未收录（不返回 error，调用方用空串判断）。
+func (s *SQLiteStore) LookupZreadWikiID(owner, name string) (string, error) {
+	var wikiID sql.NullString
+	err := s.db.QueryRow(`
+		SELECT wiki_id FROM zread_trending
+		WHERE owner = ? AND name = ?
+		ORDER BY week_start DESC LIMIT 1
+	`, owner, name).Scan(&wikiID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return wikiID.String, nil
+}
+
+// scanZreadTrending 把 rows 扫描成 []ZreadTrending。
+func (s *SQLiteStore) scanZreadTrending(rows *sql.Rows) ([]model.ZreadTrending, error) {
+	items := make([]model.ZreadTrending, 0)
+	for rows.Next() {
+		var z model.ZreadTrending
+		var wikiID, lang, desc, descZh, topics, license, branch sql.NullString
+		var pushedAt, updatedAt, createdAt sql.NullString
+		var ghRepoID sql.NullInt64
+		var isArchived, isFork int
+
+		if err := rows.Scan(
+			&z.WeekLabel, &z.WeekStart, &z.WeekEnd, &z.RankInWeek, &z.RepoID, &z.Owner, &z.Name, &z.HTMLURL,
+			&desc, &descZh, &z.StarCount, &lang, &topics, &wikiID,
+			&ghRepoID, &z.Forks, &z.OpenIssues, &z.Watchers, &z.SubscribersCount,
+			&pushedAt, &updatedAt, &createdAt, &license, &branch, &isArchived, &isFork,
+			&z.ZreadWeekStartRaw, &z.ZreadWeekEndRaw, &z.ZreadYearInferred, &z.FetchedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan zread_trending row: %w", err)
+		}
+
+		z.Description = desc.String
+		z.DescriptionZh = descZh.String
+		z.Language = lang.String
+		z.Topics = topics.String
+		z.WikiID = wikiID.String
+		z.LicenseSpdx = license.String
+		z.DefaultBranch = branch.String
+		z.PushedAt = pushedAt.String
+		z.UpdatedAt = updatedAt.String
+		z.CreatedAt = createdAt.String
+		if ghRepoID.Valid {
+			z.GhRepoID = ghRepoID.Int64
+		}
+		z.IsArchived = isArchived == 1
+		z.IsFork = isFork == 1
+
+		items = append(items, z)
+	}
+	return items, rows.Err()
 }
 
 // UpsertProject 插入项目，已存在则忽略（保留最早出现的期号）

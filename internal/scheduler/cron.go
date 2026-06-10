@@ -2,8 +2,10 @@
 package scheduler
 
 import (
+	"context"
 	"log"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -12,15 +14,18 @@ import (
 	"github.com/dong4j/starcat-weekly-api/internal/fetcher"
 	"github.com/dong4j/starcat-weekly-api/internal/model"
 	"github.com/dong4j/starcat-weekly-api/internal/parser"
+	"github.com/dong4j/starcat-weekly-api/internal/spider"
 	"github.com/dong4j/starcat-weekly-api/internal/store"
 )
 
 // Scheduler 同步调度器
 type Scheduler struct {
-	store    store.Store
-	enricher *enricher.Enricher
-	repoDir  string
-	cron     *cron.Cron
+	store     store.Store
+	enricher  *enricher.Enricher
+	repoDir   string
+	cron      *cron.Cron
+	funcMu    sync.Mutex
+	running   map[string]bool // 防止并发跑同一任务（funcName 锁）
 }
 
 // New 创建调度器
@@ -30,6 +35,7 @@ func New(s store.Store, enr *enricher.Enricher, repoDir string) *Scheduler {
 		enricher: enr,
 		repoDir:  repoDir,
 		cron:     cron.New(),
+		running:  make(map[string]bool),
 	}
 }
 
@@ -48,17 +54,66 @@ func (s *Scheduler) Start() {
 		s.enricher.EnrichBatch()
 	})
 	if err != nil {
-		log.Printf("[scheduler] cron add: %v", err)
-		return
+		log.Printf("[scheduler] cron add (阮一峰): %v", err)
+	}
+
+	// v0.5 R-02 新增：周一 06:00 UTC 拉 zread 周 trending
+	// 详见 19-wiki集成.md §8.2.3 — zread 周一 00:00 UTC 更新，留 6h buffer
+	_, err = s.cron.AddFunc("0 0 6 * * 1", s.runZreadFetch)
+	if err != nil {
+		log.Printf("[scheduler] cron add (zread): %v", err)
 	}
 
 	s.cron.Start()
-	log.Println("[scheduler] cron 已启动 (每小时第 7 分)")
+	log.Println("[scheduler] cron 已启动 (阮一峰每小时第 7 分 + zread 周一 06:00)")
 }
 
 // Stop 停止调度器
 func (s *Scheduler) Stop() {
 	s.cron.Stop()
+}
+
+// runZreadFetch 拉取 zread 周 trending 一次。
+//
+// 由 cron 周期触发，也可被 admin endpoint 手动调用。
+// 内部用 tryLock("zread") 防并发跑同一任务（funcName 锁）。
+func (s *Scheduler) runZreadFetch() {
+	if !s.tryLock("zread") {
+		log.Println("[scheduler] zread fetch 已在运行中，跳过本次")
+		return
+	}
+	defer s.unlock("zread")
+
+	log.Println("[scheduler] 拉取 zread 周 trending...")
+	sp := spider.NewZreadSpider(s.store.(*store.SQLiteStore))
+	if err := sp.RunOnce(context.Background()); err != nil {
+		log.Printf("[scheduler] zread fetch: %v", err)
+		return
+	}
+	// 拉取成功后顺手 enrich 一遍，让前端下次拿到卡片时已有 14 字段
+	s.enricher.EnrichAll()
+}
+
+// SyncZread 手动触发 zread 同步（导出供 admin endpoint 复用）。
+func (s *Scheduler) SyncZread() {
+	go s.runZreadFetch()
+}
+
+// tryLock 检查并标记任务运行中。返回 false 表示已有同名任务在跑。
+func (s *Scheduler) tryLock(name string) bool {
+	s.funcMu.Lock()
+	defer s.funcMu.Unlock()
+	if s.running[name] {
+		return false
+	}
+	s.running[name] = true
+	return true
+}
+
+func (s *Scheduler) unlock(name string) {
+	s.funcMu.Lock()
+	s.running[name] = false
+	s.funcMu.Unlock()
 }
 
 // Sync 执行一次完整的 fetcher → parser → store 流程（导出供手动触发）
