@@ -20,16 +20,21 @@ type issueDetailData struct {
 
 // WeeklyHandler Weekly API 处理器
 type WeeklyHandler struct {
-	store store.Store
-	sync  func() // 手动触发同步回调
+	store     store.Store
+	sync      func() // 手动触发阮一峰周刊同步回调
+	syncZread func() // 手动触发 zread 周 trending 同步回调
 }
 
 // NewWeeklyHandler 创建处理器
-func NewWeeklyHandler(s store.Store, syncFn func()) *WeeklyHandler {
-	return &WeeklyHandler{store: s, sync: syncFn}
+//
+// syncFn: 阮一峰周刊同步函数（fetcher → parser → store）
+// syncZreadFn: zread 周 trending 同步函数（spider → store + enrich）
+// 二者解耦，允许 admin 端点独立触发。
+func NewWeeklyHandler(s store.Store, syncFn func(), syncZreadFn func()) *WeeklyHandler {
+	return &WeeklyHandler{store: s, sync: syncFn, syncZread: syncZreadFn}
 }
 
-// HandleProjectsV1 GET /api/v1/projects — 项目列表（分页 + 筛选）
+// HandleProjectsV1 GET /api/v1/weekly — 项目列表（分页 + 筛选）
 func (h *WeeklyHandler) HandleProjectsV1(w http.ResponseWriter, r *http.Request) {
 	params := parseQueryParams(r)
 
@@ -59,7 +64,7 @@ func (h *WeeklyHandler) HandleProjectsV1(w http.ResponseWriter, r *http.Request)
 	writeJSONWithMeta(w, cards, meta)
 }
 
-// HandleProjectByOwnerRepoV1 GET /api/v1/projects/{owner}/{repo} — 获取单 repo 聚合
+// HandleProjectByOwnerRepoV1 GET /api/v1/weekly/{owner}/{repo} — 获取单 repo 聚合
 func (h *WeeklyHandler) HandleProjectByOwnerRepoV1(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("owner")
 	repo := r.PathValue("repo")
@@ -144,10 +149,25 @@ func (h *WeeklyHandler) HandleIssueV1(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandleAdminSync POST /internal/sync — 手动触发同步 (fire-and-forget)
+// HandleAdminSync POST /internal/sync/weekly — 手动触发同步 (fire-and-forget)
 func (h *WeeklyHandler) HandleAdminSync(w http.ResponseWriter, r *http.Request) {
 	taskID := "task-" + time.Now().UTC().Format("2006-01-02T15:04:05Z") + "-weekly"
 	go h.sync()
+
+	writeJSON(w, map[string]string{
+		"task_id":    taskID,
+		"started_at": time.Now().UTC().Format(time.RFC3339),
+		"status":     "running",
+	})
+}
+
+// HandleZreadSync POST /internal/sync/zread — 手动触发 zread 周 trending 同步 (fire-and-forget)
+//
+// 走 sch.SyncZread() → spider → store + enrich，与阮一峰周刊同步完全解耦。
+// 内部 tryLock("zread") 防并发跑同一任务（同 cron 周期锁）。
+func (h *WeeklyHandler) HandleZreadSync(w http.ResponseWriter, r *http.Request) {
+	taskID := "task-" + time.Now().UTC().Format("2006-01-02T15:04:05Z") + "-zread"
+	go h.syncZread()
 
 	writeJSON(w, map[string]string{
 		"task_id":    taskID,

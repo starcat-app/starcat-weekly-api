@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-06-10
+
+### Changed
+- **路径重命名（dong4j 拍板）**：把阮一峰周刊端点从「通用 projects 命名」改为「weekly 命名空间」，与 zread 周 trending 端的命名风格对齐：
+  - `GET /api/v1/projects` → `GET /api/v1/weekly`
+  - `GET /api/v1/projects/{owner}/{repo}` → `GET /api/v1/weekly/{owner}/{repo}`
+  - `POST /internal/sync` → `POST /internal/sync/weekly`
+  - `GET /api/v1/issues` / `GET /api/v1/issues/{number}` / `GET /api/v1/zread` / `POST /internal/sync/zread` 维持不动
+- **客户端同步**：Starcat 主项目 `AppEndpoints.swift` 同步更新 3 处 string literal（`projects` / `projectsByOwnerRepo`）+ 4 个源文件注释同步。**breaking change**（旧端点返 404，客户端必须同步升级）
+- **Rationale**：① weekly 是周更内容，命名空间与「每周精选」语义对齐 ② 与 `/api/v1/zread` / `/internal/sync/zread` 形成清晰的「weekly/zread 双数据源」结构 ③ 内部符号名（`HandleProjectsV1` / `WeeklyHandler` / `Projects` 模型）**不重命名**（避免与 6+ 历史章节冲突，留待后续清理）
+
 ## [0.5.1] - 2026-06-10
 
 ### Changed
@@ -15,7 +26,7 @@
 ## [0.5.0] - 2026-06-10 (R-02 zread 接入 weekly-api)
 
 ### Added
-- **新端点** `GET /api/v1/trending/zread?week=this|last|YYYY-MM-DD&limit=20`：
+- **新端点** `GET /api/v1/zread?week=this|last|YYYY-MM-DD&limit=20`：
   返回 zread 公开周 trending 列表（无鉴权公开 JSON 端点，决策 ② 独立端点不动现有）
 - **新表** `zread_trending`（原 V3 migration,0.5.1 改用 createSchema 一次性建好）：11 zread 字段 + 14 enricher 字段 + 3 v0.4.1
   跨年回溯字段 + 4 索引（决策 ① 独立建表不合并 projects）

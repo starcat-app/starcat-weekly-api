@@ -15,7 +15,7 @@ Starcat Weekly 后端服务 —— 解析[阮一峰周刊](https://github.com/ru
 
 ## v0.5 R-02 新增（zread 周 trending 接入）
 
-- **新端点** `GET /api/v1/trending/zread?week=this|last|YYYY-MM-DD&limit=20`
+- **新端点** `GET /api/v1/zread?week=this|last|YYYY-MM-DD&limit=20`
   详见 [API 文档](#zread-周-trending-v05-新增) 章节
 - **新表** `zread_trending`（0.5.0 新建,决策 ① 独立建表不合并 projects）
 - **新 cron 任务** 周一 06:00 UTC 拉 zread 公开 JSON 端点并写入数据库
@@ -37,7 +37,7 @@ go run ./cmd/server/
 
 # 4. 测试 API（需带 API Key）
 API_KEY="your-key-from-env"
-curl -H "Authorization: Bearer $API_KEY" http://localhost:5003/api/v1/projects?page=1&page_size=5
+curl -H "Authorization: Bearer $API_KEY" http://localhost:5003/api/v1/weekly?page=1&page_size=5
 ```
 
 ### Docker
@@ -80,13 +80,13 @@ fly deploy
 ### 项目列表
 
 ```
-GET /api/v1/projects?page=1&page_size=20&issue=latest&lang=Go&sort=stars_desc
+GET /api/v1/weekly?page=1&page_size=20&issue=latest&lang=Go&sort=stars_desc
 ```
 
 ### 单个项目详情
 
 ```
-GET /api/v1/projects/{owner}/{repo}
+GET /api/v1/weekly/{owner}/{repo}
 ```
 
 ### 期号列表
@@ -104,13 +104,13 @@ GET /api/v1/issues/{number}
 ### 手动同步 (Admin)
 
 ```
-POST /internal/sync
+POST /internal/sync/weekly
 ```
 
 ### zread 周 trending（v0.5 新增）
 
 ```
-GET /api/v1/trending/zread?week=this|last|YYYY-MM-DD&limit=20
+GET /api/v1/zread?week=this|last|YYYY-MM-DD&limit=20
 ```
 
 参数：

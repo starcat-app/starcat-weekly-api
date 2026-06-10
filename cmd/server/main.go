@@ -85,7 +85,7 @@ func main() {
 	sch := scheduler.New(s, enr, repoDir)
 
 	// Initialize HTTP handler
-	wh := handler.NewWeeklyHandler(s, sch.Sync)
+	wh := handler.NewWeeklyHandler(s, sch.Sync, sch.SyncZread)
 	zh := handler.NewZreadTrendingHandler(s)
 
 	// Register routes (Go 1.22+ style)
@@ -95,15 +95,17 @@ func main() {
 	mux.HandleFunc("GET /healthz", wh.Healthz) // Health check (unauthenticated)
 
 	// API V1 Endpoints (authenticated)
-	mux.Handle("GET /api/v1/projects", authMW.Wrap(http.HandlerFunc(wh.HandleProjectsV1)))
-	mux.Handle("GET /api/v1/projects/{owner}/{repo}", authMW.Wrap(http.HandlerFunc(wh.HandleProjectByOwnerRepoV1)))
+	mux.Handle("GET /api/v1/weekly", authMW.Wrap(http.HandlerFunc(wh.HandleProjectsV1)))
+	mux.Handle("GET /api/v1/weekly/{owner}/{repo}", authMW.Wrap(http.HandlerFunc(wh.HandleProjectByOwnerRepoV1)))
 	mux.Handle("GET /api/v1/issues", authMW.Wrap(http.HandlerFunc(wh.HandleIssuesV1)))
 	mux.Handle("GET /api/v1/issues/{number}", authMW.Wrap(http.HandlerFunc(wh.HandleIssueV1)))
 	// v0.5 R-02 新增：zread 周 trending 端点（决策 ② 独立端点，不污染阮一峰现有）
-	mux.Handle("GET /api/v1/trending/zread", authMW.Wrap(http.HandlerFunc(zh.HandleZreadTrendingV1)))
+	mux.Handle("GET /api/v1/zread", authMW.Wrap(http.HandlerFunc(zh.HandleZreadTrendingV1)))
 
 	// Admin Endpoints (authenticated)
-	mux.Handle("POST /internal/sync", authMW.Wrap(http.HandlerFunc(wh.HandleAdminSync)))
+	mux.Handle("POST /internal/sync/weekly", authMW.Wrap(http.HandlerFunc(wh.HandleAdminSync)))
+	// v0.5 R-02 新增：zread 同步 admin 端点（与阮一峰周刊同步解耦）
+	mux.Handle("POST /internal/sync/zread", authMW.Wrap(http.HandlerFunc(wh.HandleZreadSync)))
 
 	// Start scheduler (initial sync + cron)
 	go sch.Start()
@@ -122,11 +124,12 @@ func main() {
 	// Start HTTP server
 	log.Printf("starcat-weekly-api starting on port %s", port)
 	log.Printf("V1 Endpoints (authenticated):")
-	log.Printf("  GET  /api/v1/projects           - List projects")
-	log.Printf("  GET  /api/v1/projects/{o}/{r}   - Get single project")
+	log.Printf("  GET  /api/v1/weekly             - List projects")
+	log.Printf("  GET  /api/v1/weekly/{o}/{r}     - Get single project")
 	log.Printf("  GET  /api/v1/issues             - List issues")
 	log.Printf("  GET  /api/v1/issues/{n}         - Get issue detail")
-	log.Printf("  GET  /api/v1/trending/zread     - List zread weekly trending (v0.5)")
-	log.Printf("  POST /internal/sync             - Trigger manual sync")
+	log.Printf("  GET  /api/v1/zread               - List zread weekly trending (v0.5)")
+	log.Printf("  POST /internal/sync/weekly      - Trigger manual sync (阮一峰周刊)")
+	log.Printf("  POST /internal/sync/zread       - Trigger manual sync (zread 周 trending)")
 	log.Fatal(http.ListenAndServe(":"+port, mux))
 }

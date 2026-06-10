@@ -1,6 +1,6 @@
 // Package handler 提供 zread 周 trending API 处理器。
 //
-// v0.5 R-02 新增：独立端点 GET /api/v1/trending/zread（决策 ②），
+// v0.5 R-02 新增：独立端点 GET /api/v1/zread（决策 ②），
 // 不增加 ?source= 参数、不动现有阮一峰周刊端点。
 //
 // envelope 走共享件 envelope.go（Source / MergedFromXxx 4 字段 omitempty 不输出）；
@@ -28,7 +28,7 @@ func NewZreadTrendingHandler(s store.Store) *ZreadTrendingHandler {
 	return &ZreadTrendingHandler{store: s}
 }
 
-// HandleZreadTrendingV1 GET /api/v1/trending/zread?week=this|last|YYYY-MM-DD&limit=20
+// HandleZreadTrendingV1 GET /api/v1/zread?week=this|last|YYYY-MM-DD&limit=20
 //
 // 返回当前（或历史）zread 周 trending 列表。
 // 响应 envelope.data 是 ZreadTrendingEnvelope（model 内定义），含 week_label / week_start / items。

@@ -13,8 +13,8 @@
 - [x] **zread_trending 表 schema** — `internal/store/sqlite.go` `migrateV3()` 新建
       `zread_trending`（11 zread 字段 + 14 enricher 字段 + 3 v0.4.1 字段 + 4 索引）
 - [x] **3 个 store 方法** — `UpsertZreadTrending` / `QueryZreadTrending` / `LookupZreadWikiID`
-- [x] **新端点** — `GET /api/v1/trending/zread?week=this|last|YYYY-MM-DD&limit=20`
-      （决策 ②：独立端点，不动现有 `/api/v1/projects` `/api/v1/issues`）
+- [x] **新端点** — `GET /api/v1/zread?week=this|last|YYYY-MM-DD&limit=20`
+      （决策 ②：独立端点，不动现有 `/api/v1/issues`；`/api/v1/projects` 已在 v0.5.2 改名为 `/api/v1/weekly`）
 
 ### 高优（已完成）
 - [x] **年份推断异常告警** — `internal/spider/zread_year_infer.go` 阈值 `>1`，`log.Printf` 告警
@@ -50,12 +50,12 @@
       REPO_DIR="/data/weekly-repo" \
       -a starcat-weekly-api
     ```
-- [ ] **存量数据回填**: 首次部署后，调用 `POST /internal/sync` 触发全量 Enrich。
+- [ ] **存量数据回填**: 首次部署后，调用 `POST /internal/sync/weekly` 触发全量 Enrich（v0.5.2 起改用新路径，旧 `/internal/sync` 已 404）。
     - 预计耗时: 2000 项目 × 0.7s ≈ 25 分钟。
-    - 验证: 检查 `/api/v1/projects` 响应中 `gh_repo_id` 是否不再为 null。
+    - 验证: 检查 `/api/v1/weekly` 响应中 `gh_repo_id` 是否不再为 null。
 
 ## 3. 功能增强 (P2 / Future)
-- [ ] **同步进度查询 API**: 实现 `GET /internal/sync/status/{task_id}`，目前 `/internal/sync` 为 fire-and-forget 模式。
+- [ ] **同步进度查询 API**: 实现 `GET /internal/sync/status/{task_id}`，目前 `/internal/sync/weekly` 为 fire-and-forget 模式。
 - [ ] **跨 API 配额监控**: 建立监控机制，观察 `starcat-trending-api` 与 `starcat-weekly-api` 是否存在 GitHub PAT 配额竞争。
 - [ ] **GitHub App 接入**: 如果 PAT 维护成本过高，考虑接入 GitHub App 自动刷新 Token。
 - [ ] **Article 模型演进**: 如果周刊未来需要返回「编辑点评」等深度非代码段落，需另起 `/api/v1/weekly/articles` 接口，避免污染 `StarcatRepoCardDTO`。
