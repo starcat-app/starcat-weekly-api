@@ -568,6 +568,26 @@ func (s *SQLiteStore) UpdateProjectMeta(p *model.Project) error {
 	return err
 }
 
+// GetZreadRepos 获取所有 zread trending 的 owner/repo 列表（用于 wiki 预热）。
+func (s *SQLiteStore) GetZreadRepos() []string {
+	rows, err := s.db.Query(`SELECT DISTINCT owner, name FROM zread_trending`)
+	if err != nil {
+		log.Printf("[store] GetZreadRepos: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	var repos []string
+	for rows.Next() {
+		var owner, name string
+		if err := rows.Scan(&owner, &name); err != nil {
+			continue
+		}
+		repos = append(repos, owner+"/"+name)
+	}
+	return repos
+}
+
 // Close 关闭数据库
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()

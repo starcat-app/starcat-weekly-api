@@ -13,6 +13,7 @@ import (
 	"github.com/dong4j/starcat-weekly-api/internal/enricher"
 	"github.com/dong4j/starcat-weekly-api/internal/fetcher"
 	"github.com/dong4j/starcat-weekly-api/internal/model"
+	"github.com/dong4j/starcat-weekly-api/internal/notifier"
 	"github.com/dong4j/starcat-weekly-api/internal/parser"
 	"github.com/dong4j/starcat-weekly-api/internal/spider"
 	"github.com/dong4j/starcat-weekly-api/internal/store"
@@ -20,29 +21,32 @@ import (
 
 // Scheduler 同步调度器
 type Scheduler struct {
-	store     store.Store
-	enricher  *enricher.Enricher
-	repoDir   string
-	cron      *cron.Cron
-	funcMu    sync.Mutex
-	running   map[string]bool // 防止并发跑同一任务（funcName 锁）
+	store        store.Store
+	enricher     *enricher.Enricher
+	wikiNotifier *notifier.WikiNotifier
+	repoDir      string
+	cron         *cron.Cron
+	funcMu       sync.Mutex
+	running      map[string]bool // 防止并发跑同一任务（funcName 锁）
 }
 
 // New 创建调度器
-func New(s store.Store, enr *enricher.Enricher, repoDir string) *Scheduler {
+func New(s store.Store, enr *enricher.Enricher, wn *notifier.WikiNotifier, repoDir string) *Scheduler {
 	return &Scheduler{
-		store:    s,
-		enricher: enr,
-		repoDir:  repoDir,
-		cron:     cron.New(),
-		running:  make(map[string]bool),
+		store:        s,
+		enricher:     enr,
+		wikiNotifier: wn,
+		repoDir:      repoDir,
+		cron:         cron.New(),
+		running:      make(map[string]bool),
 	}
 }
 
 // Start 启动定时器 + 首次全量同步
 func (s *Scheduler) Start() {
 	log.Println("[scheduler] 首次全量同步...")
-	s.sync()
+	repos := s.sync()
+	s.wikiNotifier.NotifyRepos(repos)
 
 	log.Println("[scheduler] 启动元数据补全...")
 	s.enricher.EnrichAll()
@@ -50,7 +54,8 @@ func (s *Scheduler) Start() {
 	// 每小时同步一次（取第 7 分钟避免整点拥挤）
 	_, err := s.cron.AddFunc("7 * * * *", func() {
 		log.Println("[scheduler] 定时同步...")
-		s.sync()
+		repos := s.sync()
+		s.wikiNotifier.NotifyRepos(repos)
 		s.enricher.EnrichBatch()
 	})
 	if err != nil {
@@ -90,8 +95,14 @@ func (s *Scheduler) runZreadFetch() {
 		log.Printf("[scheduler] zread fetch: %v", err)
 		return
 	}
-	// 拉取成功后顺手 enrich 一遍，让前端下次拿到卡片时已有 14 字段
+	// 拉取成功后随手 enrich 一遍，让前端下次拿到卡片时已有 14 字段
 	s.enricher.EnrichAll()
+
+	// 异步通知 wiki-api 预热本次 zread 拉取的 repo
+	if s.wikiNotifier.IsEnabled() {
+		repos := s.store.GetZreadRepos() // 从 DB 提取所有 zread repo
+		s.wikiNotifier.NotifyRepos(repos)
+	}
 }
 
 // SyncZread 手动触发 zread 同步（导出供 admin endpoint 复用）。
@@ -118,19 +129,23 @@ func (s *Scheduler) unlock(name string) {
 
 // Sync 执行一次完整的 fetcher → parser → store 流程（导出供手动触发）
 func (s *Scheduler) Sync() {
-	s.sync()
+	repos := s.sync()
+	s.wikiNotifier.NotifyRepos(repos)
 }
 
-// sync 内部同步逻辑
-func (s *Scheduler) sync() {
+// sync 内部同步逻辑。
+// 返回本次解析出的 owner/repo 列表，用于 wiki 预热。
+func (s *Scheduler) sync() []string {
 	issues, err := fetcher.CloneOrPull(s.repoDir)
 	if err != nil {
 		log.Printf("[scheduler] fetch: %v", err)
-		return
+		return nil
 	}
 	log.Printf("[scheduler] 获取到 %d 期周刊", len(issues))
 
 	newCount := 0
+	var allRepos []string
+
 	for i, issue := range issues {
 		existing, _ := s.store.GetIssue(issue.Number)
 		if existing != nil && i < len(issues)-10 {
@@ -157,7 +172,9 @@ func (s *Scheduler) sync() {
 			if err := s.store.UpsertProject(&projects[j]); err != nil {
 				log.Printf("[scheduler] upsert %s/%s: %v",
 					projects[j].RepoOwner, projects[j].RepoName, err)
+				continue
 			}
+			allRepos = append(allRepos, projects[j].RepoOwner+"/"+projects[j].RepoName)
 		}
 
 		if len(projects) > 0 {
@@ -170,5 +187,6 @@ func (s *Scheduler) sync() {
 		}
 	}
 
-	log.Printf("[scheduler] 同步完成: %d 期新/更新", newCount)
+	log.Printf("[scheduler] 同步完成: %d 期新/更新, %d 个 repo", newCount, len(allRepos))
+	return allRepos
 }

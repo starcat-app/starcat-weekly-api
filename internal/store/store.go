@@ -43,6 +43,9 @@ type Store interface {
 	// LookupZreadWikiID 反查 zread wiki_id（wiki-api 复用）
 	LookupZreadWikiID(owner, name string) (string, error)
 
+	// GetZreadRepos 获取所有 zread trending 的 owner/repo 列表（用于 wiki 预热）
+	GetZreadRepos() []string
+
 	// Close 关闭数据库连接
 	Close() error
 }

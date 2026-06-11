@@ -16,6 +16,7 @@ import (
 	"github.com/dong4j/starcat-weekly-api/internal/enricher"
 	"github.com/dong4j/starcat-weekly-api/internal/handler"
 	"github.com/dong4j/starcat-weekly-api/internal/middleware"
+	"github.com/dong4j/starcat-weekly-api/internal/notifier"
 	"github.com/dong4j/starcat-weekly-api/internal/scheduler"
 	"github.com/dong4j/starcat-weekly-api/internal/store"
 	"github.com/dong4j/starcat-weekly-api/internal/tokenpool"
@@ -81,8 +82,11 @@ func main() {
 	rl := enricher.NewRateLimitHandler(720 * time.Millisecond) // 5000/h ≈ 720ms
 	enr := enricher.NewEnricher(s, pool, rl)
 
+	// Wiki Notifier（增量预热 wiki-api 缓存，通过 WIKI_API_KEY 控制开关）
+	wikiNotifier := notifier.NewWikiNotifier()
+
 	// Initialize scheduler
-	sch := scheduler.New(s, enr, repoDir)
+	sch := scheduler.New(s, enr, wikiNotifier, repoDir)
 
 	// Initialize HTTP handler
 	wh := handler.NewWeeklyHandler(s, sch.Sync, sch.SyncZread)
