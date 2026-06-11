@@ -16,6 +16,7 @@ import (
 
 	"github.com/dong4j/starcat-weekly-api/internal/discovery"
 	"github.com/dong4j/starcat-weekly-api/internal/enricher"
+	"github.com/dong4j/starcat-weekly-api/internal/github"
 	"github.com/dong4j/starcat-weekly-api/internal/handler"
 	"github.com/dong4j/starcat-weekly-api/internal/middleware"
 	"github.com/dong4j/starcat-weekly-api/internal/notifier"
@@ -88,14 +89,14 @@ func main() {
 	}
 	defer s.Close()
 
-	// Initialize enricher with TokenPool and RateLimitHandler
-	rl := enricher.NewRateLimitHandler(720 * time.Millisecond) // 5000/h ≈ 720ms
-	enr := enricher.NewEnricher(s, pool, rl)
+	// Initialize GitHub client（统一 Token 池 + 速率限制，enricher / discovery / zread 共享）
+	ghClient := github.NewClient(pool, github.NewRateLimitHandler(720*time.Millisecond)) // 5000/h ≈ 720ms
+	enr := enricher.NewEnricher(s, ghClient)
 
-	// AI Discovery 复用同一 GitHub Token Pool + RateLimitHandler，避免两个模块各自认为
-	// 自己拥有完整配额。LLM key 为空时仍会 collect/enrich，只跳过 classify。
+	// AI Discovery 复用同一个 GitHub Client，避免模块间配额误判。
+	// LLM key 为空时仍会 collect/enrich，只跳过 classify。
 	hnClient := discovery.NewHNClient(nil)
-	discoveryGitHub := discovery.NewGitHubClient(nil, pool, rl)
+	discoveryGitHub := discovery.NewGitHubClient(ghClient)
 	discoveryConfig := discovery.Config{
 		HNLimit:             envInt("DISCOVERY_HN_LIMIT", 30),
 		BatchSize:           envInt("DISCOVERY_BATCH_SIZE", 20),

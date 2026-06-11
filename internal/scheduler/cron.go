@@ -116,8 +116,8 @@ func (s *Scheduler) runZreadFetch() {
 		log.Printf("[scheduler] zread fetch: %v", err)
 		return
 	}
-	// 拉取成功后随手 enrich 一遍，让前端下次拿到卡片时已有 14 字段
-	s.enricher.EnrichAll()
+	// 拉取成功后补全 GitHub 元数据（gh_repo_id / forks / license 等 14 字段）
+	s.enricher.EnrichAllZread()
 
 	// 异步通知 wiki-api 预热本次 zread 拉取的 repo
 	if s.wikiNotifier.IsEnabled() {

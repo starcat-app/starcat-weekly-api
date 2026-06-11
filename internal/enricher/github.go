@@ -1,72 +1,36 @@
-// Package enricher 通过 GitHub API 补全项目的 stars、语言、描述等元数据。
+// Package enricher 通过 github.Client 补全项目的 GitHub 元数据。
 //
-// R-01 v1.2: 接入 Token Pool（多 PAT 冗余 + Quota-aware）+
-// RateLimitHandler（主动退避）+ 14+5 字段扩拉。
+// 此前 enricher 自己封装 HTTP 调用、Token 池、速率限制。
+// 统一到 internal/github 后，enricher 只负责：
+//  1. 从 store 取未补全的 project → 调 github.Client.GetRepo()
+//  2. 将 RepoResponse 映射到 model.Project → 调 store.UpdateProjectMeta()
+//
+// RateLimitHandler 已迁移到 internal/github 包，本文件保留 re-export 以兼容旧引用。
 package enricher
 
 import (
-	"encoding/json"
-	"fmt"
+	"context"
+	"errors"
 	"log"
-	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
+	"github.com/dong4j/starcat-weekly-api/internal/github"
 	"github.com/dong4j/starcat-weekly-api/internal/model"
 	"github.com/dong4j/starcat-weekly-api/internal/store"
-	"github.com/dong4j/starcat-weekly-api/internal/tokenpool"
 )
 
-// GitHubRepo API 返回结构
-type githubRepoResponse struct {
-	ID            int64    `json:"id"`
-	FullName      string   `json:"full_name"`
-	Description   *string  `json:"description"`
-	Stargazers    int      `json:"stargazers_count"`
-	Forks         int      `json:"forks_count"`
-	Watchers      int      `json:"watchers_count"`
-	Subscribers   int      `json:"subscribers_count"`
-	Language      *string  `json:"language"`
-	Topics        []string `json:"topics"`
-	Homepage      *string  `json:"homepage"`
-	License       *struct {
-		SpdxID *string `json:"spdx_id"`
-	} `json:"license"`
-	Archived      bool   `json:"archived"`
-	Fork          bool   `json:"fork"`
-	Private       bool   `json:"private"`
-	DefaultBranch string `json:"default_branch"`
-	OpenIssues    int    `json:"open_issues_count"`
-	PushedAt      string `json:"pushed_at"`
-	UpdatedAt     string `json:"updated_at"`
-	CreatedAt     string `json:"created_at"`
-	Owner         *struct {
-		AvatarURL *string `json:"avatar_url"`
-	} `json:"owner"`
-	Message string `json:"message"`
-}
-
 // Enricher GitHub 元数据补全器。
-// 持有 Token Pool（多 PAT 池）+ RateLimitHandler（请求间隔 + 主动暂停）。
 type Enricher struct {
-	store   store.Store
-	client  *http.Client
-	pool    *tokenpool.Pool
-	limiter *RateLimitHandler
+	store  store.Store
+	client *github.Client
 }
 
 // NewEnricher 创建补全器。
-func NewEnricher(s store.Store, pool *tokenpool.Pool, rl *RateLimitHandler) *Enricher {
-	return &Enricher{
-		store:   s,
-		client:  &http.Client{Timeout: 15 * time.Second},
-		pool:    pool,
-		limiter: rl,
-	}
+func NewEnricher(s store.Store, client *github.Client) *Enricher {
+	return &Enricher{store: s, client: client}
 }
 
-// EnrichAll 批量补全所有未补全的项目（阻塞，适合启动时调用）
+// EnrichAll 批量补全所有未补全的项目（阻塞，适合启动时 / zread 同步后调用）。
 func (e *Enricher) EnrichAll() {
 	for {
 		projects, err := e.store.GetUnenrichedProjects(50)
@@ -81,12 +45,12 @@ func (e *Enricher) EnrichAll() {
 
 		log.Printf("[enricher] 待补全 %d 个项目...", len(projects))
 		for i := range projects {
-			e.enrichOne(&projects[i])
+			e.enrichProject(&projects[i])
 		}
 	}
 }
 
-// EnrichBatch 增量补全（非阻塞，适合 cron 调用）
+// EnrichBatch 增量补全（非阻塞，适合 cron 调用）。
 func (e *Enricher) EnrichBatch() {
 	go func() {
 		projects, err := e.store.GetUnenrichedProjects(30)
@@ -99,137 +63,127 @@ func (e *Enricher) EnrichBatch() {
 		}
 		log.Printf("[enricher] 增量补全 %d 个项目...", len(projects))
 		for i := range projects {
-			e.enrichOne(&projects[i])
+			e.enrichProject(&projects[i])
 		}
 	}()
 }
 
-// enrichOne 补全单个项目。
-//
-// 流程：
-//  1. PickBest 拿 Quota-aware token；nil 则 sleep 到池的 EarliestReset。
-//  2. RateLimitHandler.Wait() 阻塞到允许发起请求。
-//  3. 调 GET /repos/{o}/{r}，UpdateFromResponse 让 pool 感知 quota / dead。
-//  4. 按 status 分支：200 写库 / 404 标 unavailable / 429+403 主动 Pause 到 reset 时刻。
-//
-// 注：本函数不做 retry（与现有调用方 EnrichAll 行为兼容，
-// 失败的 project 会保留 enriched_at=NULL，下次 GetUnenrichedProjects 自动重选）。
-func (e *Enricher) enrichOne(p *model.Project) {
-	token := e.pool.PickBest()
-	if token == nil {
-		// 所有 token 都耗尽或已 dead，sleep 到最早的 reset 时刻再退出本轮
-		resetAt := e.pool.EarliestReset()
-		if !resetAt.IsZero() && resetAt.After(time.Now()) {
-			d := time.Until(resetAt)
-			log.Printf("[enricher] no available tokens, sleeping %v until %s",
-				d.Round(time.Second), resetAt.Format(time.RFC3339))
-			time.Sleep(d)
-		} else {
-			// 兜底：池中没有 ResetAt 信息（启动期所有 token remaining=-1 且全 dead），sleep 60s
-			log.Printf("[enricher] no available tokens and no reset info, sleeping 60s")
-			time.Sleep(60 * time.Second)
-		}
-		return
-	}
+// enrichProject 补全单个 project（阮一峰周刊 projects 表）。
+func (e *Enricher) enrichProject(p *model.Project) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
 
-	e.limiter.Wait()
-
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", p.RepoOwner, p.RepoName)
-	req, err := http.NewRequest("GET", url, nil)
+	resp, err := e.client.GetRepo(ctx, p.RepoOwner, p.RepoName)
 	if err != nil {
-		return
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "starcat-weekly-api")
-	req.Header.Set("Authorization", "Bearer "+token.Value)
-
-	resp, err := e.client.Do(req)
-	if err != nil {
-		log.Printf("[enricher] HTTP %s/%s: %v", p.RepoOwner, p.RepoName, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	e.pool.UpdateFromResponse(token, resp)
-
-	// 404 → 标记不可用
-	if resp.StatusCode == http.StatusNotFound {
-		p.IsAvailable = false
-		if err := e.store.UpdateProjectMeta(p); err != nil {
-			log.Printf("[enricher] update %s/%s: %v", p.RepoOwner, p.RepoName, err)
-		}
-		return
-	}
-
-	// 速率限制 → 主动 Pause 到 reset 时刻（替代固定 sleep 60s）
-	// 这样所有并发 worker 都会自动等到 reset 才继续。
-	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-		pauseUntil := token.ResetAt
-		if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
-			if secs, err := strconv.Atoi(retryAfter); err == nil && secs > 0 {
-				ra := time.Now().Add(time.Duration(secs) * time.Second)
-				if ra.After(pauseUntil) {
-					pauseUntil = ra
-				}
+		if errors.Is(err, github.ErrRepoNotFound) {
+			p.IsAvailable = false
+			if err := e.store.UpdateProjectMeta(p); err != nil {
+				log.Printf("[enricher] mark unavailable %s/%s: %v", p.RepoOwner, p.RepoName, err)
 			}
+			return
 		}
-		// 兜底：reset 信息缺失或已过期，至少暂停 60s
-		if pauseUntil.Before(time.Now().Add(60 * time.Second)) {
-			pauseUntil = time.Now().Add(60 * time.Second)
-		}
-		log.Printf("[enricher] 速率限制触发 (%d)，主动暂停到 %s", resp.StatusCode, pauseUntil.Format(time.RFC3339))
-		e.limiter.Pause(pauseUntil)
+		// 速率限制或网络错误，本轮跳过，下次 cron 重试
+		log.Printf("[enricher] %s/%s: %v", p.RepoOwner, p.RepoName, err)
 		return
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("[enricher] %s/%s HTTP %d", p.RepoOwner, p.RepoName, resp.StatusCode)
-		return
+	// 映射 github.RepoResponse → model.Project
+	p.GhRepoID = resp.ID
+	if resp.Description != nil {
+		p.Description = *resp.Description
 	}
-
-	var gh githubRepoResponse
-	if err := json.NewDecoder(resp.Body).Decode(&gh); err != nil {
-		log.Printf("[enricher] decode %s/%s: %v", p.RepoOwner, p.RepoName, err)
-		return
+	p.Stars = resp.Stars
+	p.Forks = resp.Forks
+	p.Watchers = resp.Watchers
+	p.Subscribers = resp.Subscribers
+	if resp.Language != nil {
+		p.Language = *resp.Language
 	}
-
-	// 更新字段
-	p.GhRepoID = gh.ID
-	if gh.Description != nil {
-		p.Description = strings.TrimSpace(*gh.Description)
+	if resp.Homepage != nil && *resp.Homepage != "" {
+		p.Homepage = *resp.Homepage
 	}
-	p.Stars = gh.Stargazers
-	p.Forks = gh.Forks
-	p.Watchers = gh.Watchers
-	p.Subscribers = gh.Subscribers
-	if gh.Language != nil {
-		p.Language = *gh.Language
+	if resp.LicenseSpdx != nil {
+		p.LicenseSpdx = *resp.LicenseSpdx
 	}
-	if len(gh.Topics) > 0 {
-		topicsJSON, _ := json.Marshal(gh.Topics)
-		p.Topics = string(topicsJSON)
+	if resp.OwnerAvatar != nil {
+		p.OwnerAvatar = *resp.OwnerAvatar
 	}
-	if gh.Homepage != nil {
-		p.Homepage = *gh.Homepage
-	}
-	if gh.License != nil && gh.License.SpdxID != nil {
-		p.LicenseSpdx = *gh.License.SpdxID
-	}
-	p.IsArchived = gh.Archived
-	p.IsFork = gh.Fork
-	p.IsPrivate = gh.Private
-	p.DefaultBranch = gh.DefaultBranch
-	p.OpenIssues = gh.OpenIssues
-	p.PushedAt = gh.PushedAt
-	p.UpdatedAt = gh.UpdatedAt
-	p.CreatedAt = gh.CreatedAt
-	if gh.Owner != nil && gh.Owner.AvatarURL != nil {
-		p.OwnerAvatar = *gh.Owner.AvatarURL
-	}
-
+	p.IsArchived = resp.Archived
+	p.IsFork = resp.Fork
+	p.IsPrivate = resp.Private
+	p.DefaultBranch = resp.DefaultBranch
+	p.OpenIssues = resp.OpenIssues
+	p.PushedAt = resp.PushedAt
+	p.UpdatedAt = resp.UpdatedAt
+	p.CreatedAt = resp.CreatedAt
 	p.IsAvailable = true
 
 	if err := e.store.UpdateProjectMeta(p); err != nil {
 		log.Printf("[enricher] update %s/%s: %v", p.RepoOwner, p.RepoName, err)
+	}
+}
+
+// EnrichAllZread 批量补全所有未补全的 zread trending repos。
+func (e *Enricher) EnrichAllZread() {
+	for {
+		zreads, err := e.store.GetUnenrichedZreadRepos(50)
+		if err != nil {
+			log.Printf("[enricher] query unenriched zread: %v", err)
+			return
+		}
+		if len(zreads) == 0 {
+			log.Printf("[enricher] 所有 zread repos 已补全")
+			return
+		}
+
+		log.Printf("[enricher] 待补全 zread %d 个...", len(zreads))
+		for i := range zreads {
+			e.enrichZread(&zreads[i])
+		}
+	}
+}
+
+// enrichZread 补全单条 zread trending 记录的 GitHub 元数据。
+func (e *Enricher) enrichZread(z *model.ZreadTrending) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	resp, err := e.client.GetRepo(ctx, z.Owner, z.Name)
+	if err != nil {
+		if errors.Is(err, github.ErrRepoNotFound) {
+			// zread 仓库存续期短，404 只打日志不标 unavailable
+			log.Printf("[enricher] zread %s/%s: repo gone (404), skip", z.Owner, z.Name)
+			return
+		}
+		log.Printf("[enricher] zread %s/%s: %v", z.Owner, z.Name, err)
+		return
+	}
+
+	// 映射 github.RepoResponse → model.ZreadTrending
+	z.GhRepoID = resp.ID
+	z.Forks = resp.Forks
+	z.OpenIssues = resp.OpenIssues
+	z.Watchers = resp.Watchers
+	z.SubscribersCount = resp.Subscribers
+	if resp.PushedAt != "" {
+		z.PushedAt = resp.PushedAt
+	}
+	if resp.UpdatedAt != "" {
+		z.UpdatedAt = resp.UpdatedAt
+	}
+	if resp.CreatedAt != "" {
+		z.CreatedAt = resp.CreatedAt
+	}
+	if resp.LicenseSpdx != nil {
+		z.LicenseSpdx = *resp.LicenseSpdx
+	}
+	if resp.DefaultBranch != "" {
+		z.DefaultBranch = resp.DefaultBranch
+	}
+	z.IsArchived = resp.Archived
+	z.IsFork = resp.Fork
+
+	if err := e.store.UpdateZreadEnriched(z.Owner, z.Name, z.WeekStart, z); err != nil {
+		log.Printf("[enricher] update zread %s/%s: %v", z.Owner, z.Name, err)
 	}
 }

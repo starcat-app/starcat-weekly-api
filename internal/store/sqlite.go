@@ -659,6 +659,54 @@ func (s *SQLiteStore) GetZreadRepos() []string {
 	return repos
 }
 
+// GetUnenrichedZreadRepos 获取未补全 GitHub 元数据的 zread repos。
+// 条件：gh_repo_id IS NULL（zread spider 写入时不带 GitHub 数据）。
+func (s *SQLiteStore) GetUnenrichedZreadRepos(limit int) ([]model.ZreadTrending, error) {
+	query := `
+		SELECT week_label, week_start, week_end, rank_in_week, repo_id, owner, name, html_url,
+			description, description_zh, star_count, language, topics, wiki_id,
+			gh_repo_id, forks, open_issues, watchers, subscribers_count,
+			pushed_at, updated_at, created_at, license_spdx, default_branch, is_archived, is_fork,
+			zread_week_start_raw, zread_week_end_raw, zread_year_inferred, fetched_at
+		FROM zread_trending
+		WHERE gh_repo_id IS NULL
+		ORDER BY week_start DESC
+		LIMIT ?
+	`
+	rows, err := s.db.Query(query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanZreadTrending(rows)
+}
+
+// UpdateZreadEnriched 更新单条 zread 记录的 GitHub 元数据字段。
+func (s *SQLiteStore) UpdateZreadEnriched(owner, name, weekStart string, z *model.ZreadTrending) error {
+	_, err := s.db.Exec(`
+		UPDATE zread_trending SET
+			gh_repo_id        = ?,
+			forks             = ?,
+			open_issues       = ?,
+			watchers          = ?,
+			subscribers_count = ?,
+			pushed_at         = ?,
+			updated_at        = ?,
+			created_at        = ?,
+			license_spdx      = ?,
+			default_branch    = ?,
+			is_archived       = ?,
+			is_fork           = ?
+		WHERE owner = ? AND name = ? AND week_start = ?
+	`,
+		z.GhRepoID, z.Forks, z.OpenIssues, z.Watchers, z.SubscribersCount,
+		z.PushedAt, z.UpdatedAt, z.CreatedAt, z.LicenseSpdx, z.DefaultBranch,
+		boolToInt(z.IsArchived), boolToInt(z.IsFork),
+		owner, name, weekStart,
+	)
+	return err
+}
+
 // Close 关闭数据库
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()

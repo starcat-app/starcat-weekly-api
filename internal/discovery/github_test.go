@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/dong4j/starcat-weekly-api/internal/github"
 	"github.com/dong4j/starcat-weekly-api/internal/tokenpool"
 )
 
@@ -23,8 +24,11 @@ func TestGitHubClientFetchesMetadataAndSanitizesReadme(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	client := NewGitHubClient(server.Client(), tokenpool.New([]string{"ghp_test_token_1234567890"}), nil)
-	client.baseURL = server.URL
+	ghClient := github.NewClient(tokenpool.New([]string{"ghp_test_token_1234567890"}), nil)
+	ghClient.SetBaseURL(server.URL)
+	ghClient.SetHTTPClient(server.Client())
+
+	client := NewGitHubClient(ghClient)
 	repo, err := client.Fetch(t.Context(), "acme", "agent")
 	if err != nil {
 		t.Fatal(err)

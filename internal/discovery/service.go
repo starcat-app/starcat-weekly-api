@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/dong4j/starcat-weekly-api/internal/github"
 	"github.com/dong4j/starcat-weekly-api/internal/model"
 )
 
@@ -122,7 +123,7 @@ func (s *Service) enrich(ctx context.Context, now time.Time, stats *RunStats) er
 	for _, candidate := range repos {
 		enriched, err := s.github.Fetch(ctx, candidate.Owner, candidate.Repo)
 		if err != nil {
-			var httpErr *GitHubHTTPError
+			var httpErr *github.HTTPError
 			if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
 				if storeErr := s.repository.MarkDiscoveryUnavailable(candidate.Owner, candidate.Repo, err.Error(), now); storeErr != nil {
 					return storeErr

@@ -50,6 +50,12 @@ type Store interface {
 	// GetZreadRepos 获取所有 zread trending 的 owner/repo 列表（用于 wiki 预热）
 	GetZreadRepos() []string
 
+	// GetUnenrichedZreadRepos 获取未补全 GitHub 元数据的 zread repos
+	GetUnenrichedZreadRepos(limit int) ([]model.ZreadTrending, error)
+
+	// UpdateZreadEnriched 更新单条 zread 记录的 GitHub 元数据
+	UpdateZreadEnriched(owner, name, weekStart string, z *model.ZreadTrending) error
+
 	// --- AI Discovery（Show HN）---
 	UpsertDiscoverySubmission(submission model.DiscoverySubmission) error
 	GetDiscoveryEnrichmentCandidates(limit int, now time.Time) ([]model.DiscoveryRepo, error)
