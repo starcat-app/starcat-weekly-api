@@ -1,5 +1,15 @@
 # Starcat R-01 Weekly API 遗留问题与后续任务
 
+## AI Discovery v0.6（2026-06-11）
+
+- [x] Hacker News 官方 API collector（showstories + item，URL/text 双入口）
+- [x] discovery_repos + discovery_submissions 双表与分页/分类查询
+- [x] GitHub metadata + README excerpt enrich（复用 Token Pool）
+- [x] OpenAI-compatible LLM 分类 + confidence + retry/cooldown 状态机
+- [x] 列表 / 单仓库 / 独立 Admin sync 三端点
+- [x] hourly cron + funcName 防重锁
+- [ ] Starcat 客户端接入 `{repo, discovery}` endpoint 专用 DTO
+
 ## R-02. zread 周 trending 接入（v0.5 翻转，2026-06-10）
 
 > **背景**：阮一峰周刊（中文社区精选）和 zread 周榜（GitHub 周 trending 全集）语义互补。

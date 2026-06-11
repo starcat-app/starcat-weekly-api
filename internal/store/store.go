@@ -1,7 +1,11 @@
 // Package store 定义数据存储接口
 package store
 
-import "github.com/dong4j/starcat-weekly-api/internal/model"
+import (
+	"time"
+
+	"github.com/dong4j/starcat-weekly-api/internal/model"
+)
 
 // Store 数据存储接口，便于 mock 测试和未来切换存储后端
 type Store interface {
@@ -45,6 +49,18 @@ type Store interface {
 
 	// GetZreadRepos 获取所有 zread trending 的 owner/repo 列表（用于 wiki 预热）
 	GetZreadRepos() []string
+
+	// --- AI Discovery（Show HN）---
+	UpsertDiscoverySubmission(submission model.DiscoverySubmission) error
+	GetDiscoveryEnrichmentCandidates(limit int, now time.Time) ([]model.DiscoveryRepo, error)
+	UpdateDiscoveryEnriched(repo model.DiscoveryRepo, now time.Time) error
+	UpdateDiscoveryEnrichmentFailure(owner, repo, message string, nextRetryAt time.Time) error
+	MarkDiscoveryUnavailable(owner, repo, message string, now time.Time) error
+	GetDiscoveryClassificationCandidates(limit int, now time.Time) ([]model.DiscoveryRepo, error)
+	UpdateDiscoveryClassified(owner, repo, category string, confidence float64, reason, method, classifierModel string, rejected bool, now time.Time) error
+	UpdateDiscoveryClassificationFailure(owner, repo, message string, nextRetryAt time.Time, resetAttempts bool) error
+	QueryDiscovery(params model.DiscoveryQuery) ([]model.DiscoveryItemDTO, int, error)
+	GetDiscoveryByOwnerRepo(owner, repo string) (*model.DiscoveryItemDTO, error)
 
 	// Close 关闭数据库连接
 	Close() error

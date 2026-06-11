@@ -2,6 +2,7 @@
 
 Starcat Weekly 后端服务 —— 解析[阮一峰周刊](https://github.com/ruanyf/weekly)推荐的 GitHub 开源项目，
 并接入 [zread.ai](https://zread.ai) 公开周 trending 列表（v0.5 R-02 翻转加入），
+以及 Hacker News 官方 API 的 Show HN AI 项目发现流水线（v0.6），
 通过 REST API 提供给 [Starcat](https://starcat.ink) 前端。
 
 ## R-01 改造说明
@@ -19,6 +20,15 @@ Starcat Weekly 后端服务 —— 解析[阮一峰周刊](https://github.com/ru
   详见 [API 文档](#zread-周-trending-v05-新增) 章节
 - **新表** `zread_trending`（0.5.0 新建,决策 ① 独立建表不合并 projects）
 - **新 cron 任务** 周一 06:00 UTC 拉 zread 公开 JSON 端点并写入数据库
+
+## v0.6 AI Discovery（Show HN）
+
+- `GET /api/v1/discovery`：24 小时内已完成 AI 分类的仓库列表。
+- `GET /api/v1/discovery/{owner}/{repo}`：单仓库 Discovery 详情。
+- `POST /internal/sync/discovery`：管理员手动触发同步，使用独立 `ADMIN_API_KEYS`。
+- 数据源使用 Hacker News 官方 Firebase API，不解析 HTML、不依赖 Algolia。
+- `discovery_repos` 与 `discovery_submissions` 分表，保留同一仓库的多次 Show HN 投稿。
+- LLM 未配置时 collect/enrich 继续工作，分类队列保持 pending，配置后自动消费。
 
 ## 快速开始
 
@@ -56,7 +66,9 @@ docker run -p 5003:5003 \
 # 设置生产环境 Secrets
 fly secrets set \
   API_KEYS="sk-starcat-prodKey1,..." \
+  ADMIN_API_KEYS="sk-starcat-adminKey1,..." \
   GITHUB_TOKENS="ghp_token1,ghp_token2" \
+  LLM_API_KEY="sk-..." \
   STORE_FILE="/data/weekly.db" \
   REPO_DIR="/data/weekly-repo"
 
@@ -71,7 +83,10 @@ fly deploy
 | `STORE_FILE` | SQLite 数据库路径 |
 | `REPO_DIR` | 周刊 git clone 存放路径 |
 | `API_KEYS` | 逗号分隔的 API Key 白名单（用于 Bearer 鉴权） |
+| `ADMIN_API_KEYS` | Discovery 手动同步专用管理员 Key；不得随客户端分发 |
 | `GITHUB_TOKENS` | 逗号分隔的 GitHub PAT 池 |
+| `LLM_API_BASE` / `LLM_API_KEY` / `LLM_MODEL` | OpenAI-compatible 分类服务；Key 为空时暂停分类 |
+| `DISCOVERY_CRON` | Discovery cron，默认每小时第 17 分 |
 
 ## API (v1)
 
@@ -147,6 +162,68 @@ GET /api/v1/zread?week=this|last|YYYY-MM-DD&limit=20
 ```
 
 完整字段定义见 `docs/详细设计/19-wiki集成.md` §8.3 / §8.4。
+
+### AI Discovery 列表（v0.6 新增）
+
+```http
+GET /api/v1/discovery?category=all&page=1&page_size=30
+Authorization: Bearer <API_KEY>
+```
+
+`category` 支持 `all / agent / coding / mcp / rag / infra / model / skill`，默认 `all`；
+只返回最近 24 小时且分类状态为 `classified` 的仓库。响应 `data` 每项使用 endpoint 专用结构：
+
+```json
+{
+  "schema_version": 1,
+  "data": [
+    {
+      "repo": {
+        "gh_repo_id": 123,
+        "full_name": "owner/repo",
+        "owner": "owner",
+        "repo": "repo",
+        "stars": 42,
+        "forks": 3,
+        "watchers": 42,
+        "subscribers": 2,
+        "topics": ["ai", "agent"],
+        "is_archived": false,
+        "is_fork": false,
+        "is_private": false,
+        "open_issues": 1
+      },
+      "discovery": {
+        "hn_id": 123456,
+        "hn_title": "Show HN: ...",
+        "hn_url": "https://news.ycombinator.com/item?id=123456",
+        "hn_score": 18,
+        "hn_comments": 4,
+        "hn_published_at": "2026-06-11T08:30:00Z",
+        "category": "agent",
+        "classify_confidence": 0.91
+      }
+    }
+  ],
+  "meta": { "page": 1, "page_size": 30, "total": 1 }
+}
+```
+
+### AI Discovery 单仓库
+
+```http
+GET /api/v1/discovery/{owner}/{repo}
+Authorization: Bearer <API_KEY>
+```
+
+### AI Discovery 手动同步（Admin）
+
+```http
+POST /internal/sync/discovery
+Authorization: Bearer <ADMIN_API_KEY>
+```
+
+此端点会消耗 GitHub/LLM 配额，因此不接受普通 `API_KEYS`。
 
 ### 健康检查 (不鉴权)
 

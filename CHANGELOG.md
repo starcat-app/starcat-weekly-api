@@ -8,6 +8,14 @@
 ## [Unreleased]
 
 ### Added
+- **AI Discovery v0.6 (2026-06-11)**：完成 Show HN 后端 API 与定时流水线。
+  - 使用 Hacker News 官方 `/v0/showstories` + `/v0/item/{id}` API，支持从 `url` 和自发布 `text` 提取 GitHub 仓库。
+  - 新增 `discovery_repos` / `discovery_submissions` 双表，保留同 repo 多次投稿历史。
+  - 新增 GitHub metadata + README excerpt enrich，并复用现有 Token Pool / RateLimitHandler。
+  - 新增 OpenAI-compatible 单标签分类器，带 prompt injection 防护、confidence 阈值和可真正解冻的 7 天冷却状态机。
+  - 新增 `GET /api/v1/discovery`、`GET /api/v1/discovery/{owner}/{repo}`、`POST /internal/sync/discovery`。
+  - Admin sync 使用独立 `ADMIN_API_KEYS`，不接受随客户端分发的普通 API Key。
+  - API 使用 endpoint 专用 `{repo, discovery}` DTO，不修改跨服务共享 `StarcatRepoCardDTO` / `Meta` 契约。
 - **R-03 (2026-06-11)**：新增 `GET /api/v1/ping` 端点，专给 Starcat 客户端「测试连接」按钮用。
   - 走 BearerAuth 中间件，鉴权通过返回 200 + envelope `{data: {service: "weekly", ok: true}}`；
     无效 / 缺失 Key → 401；服务故障 → 5xx。

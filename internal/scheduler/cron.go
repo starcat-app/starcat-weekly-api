@@ -10,6 +10,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"github.com/dong4j/starcat-weekly-api/internal/discovery"
 	"github.com/dong4j/starcat-weekly-api/internal/enricher"
 	"github.com/dong4j/starcat-weekly-api/internal/fetcher"
 	"github.com/dong4j/starcat-weekly-api/internal/model"
@@ -21,24 +22,31 @@ import (
 
 // Scheduler 同步调度器
 type Scheduler struct {
-	store        store.Store
-	enricher     *enricher.Enricher
-	wikiNotifier *notifier.WikiNotifier
-	repoDir      string
-	cron         *cron.Cron
-	funcMu       sync.Mutex
-	running      map[string]bool // 防止并发跑同一任务（funcName 锁）
+	store         store.Store
+	enricher      *enricher.Enricher
+	wikiNotifier  *notifier.WikiNotifier
+	discovery     *discovery.Service
+	discoveryCron string
+	repoDir       string
+	cron          *cron.Cron
+	funcMu        sync.Mutex
+	running       map[string]bool // 防止并发跑同一任务（funcName 锁）
 }
 
 // New 创建调度器
-func New(s store.Store, enr *enricher.Enricher, wn *notifier.WikiNotifier, repoDir string) *Scheduler {
+func New(s store.Store, enr *enricher.Enricher, wn *notifier.WikiNotifier, repoDir string, discoveryService *discovery.Service, discoveryCron string) *Scheduler {
+	if discoveryCron == "" {
+		discoveryCron = "17 * * * *"
+	}
 	return &Scheduler{
-		store:        s,
-		enricher:     enr,
-		wikiNotifier: wn,
-		repoDir:      repoDir,
-		cron:         cron.New(),
-		running:      make(map[string]bool),
+		store:         s,
+		enricher:      enr,
+		wikiNotifier:  wn,
+		repoDir:       repoDir,
+		discovery:     discoveryService,
+		discoveryCron: discoveryCron,
+		cron:          cron.New(),
+		running:       make(map[string]bool),
 	}
 }
 
@@ -69,8 +77,17 @@ func (s *Scheduler) Start() {
 		log.Printf("[scheduler] cron add (zread): %v", err)
 	}
 
+	if s.discovery != nil {
+		// 与阮一峰第 7 分错开；任务自身还有 funcName 锁，避免 cron 与 admin 重叠。
+		_, err = s.cron.AddFunc(s.discoveryCron, s.runDiscovery)
+		if err != nil {
+			log.Printf("[scheduler] cron add (discovery): %v", err)
+		}
+		go s.runDiscovery()
+	}
+
 	s.cron.Start()
-	log.Println("[scheduler] cron 已启动 (阮一峰每小时第 7 分 + zread 周一 06:00)")
+	log.Printf("[scheduler] cron 已启动 (阮一峰每小时第 7 分 + zread 周一 06:00 + discovery %s)", s.discoveryCron)
 }
 
 // Stop 停止调度器
@@ -108,6 +125,31 @@ func (s *Scheduler) runZreadFetch() {
 // SyncZread 手动触发 zread 同步（导出供 admin endpoint 复用）。
 func (s *Scheduler) SyncZread() {
 	go s.runZreadFetch()
+}
+
+// runDiscovery 执行 Show HN collect -> GitHub enrich -> LLM classify。
+func (s *Scheduler) runDiscovery() {
+	if s.discovery == nil {
+		return
+	}
+	if !s.tryLock("discovery") {
+		log.Println("[scheduler] discovery sync 已在运行中，跳过本次")
+		return
+	}
+	defer s.unlock("discovery")
+
+	stats, err := s.discovery.RunOnce(context.Background())
+	if err != nil {
+		log.Printf("[scheduler] discovery sync: %v", err)
+		return
+	}
+	log.Printf("[scheduler] discovery sync 完成: submissions=%d enriched=%d classified=%d rejected=%d failures=%d",
+		stats.Submissions, stats.Enriched, stats.Classified, stats.Rejected, stats.Failures)
+}
+
+// SyncDiscovery 异步触发 Discovery 同步，供独立 Admin endpoint 复用。
+func (s *Scheduler) SyncDiscovery() {
+	go s.runDiscovery()
 }
 
 // tryLock 检查并标记任务运行中。返回 false 表示已有同名任务在跑。

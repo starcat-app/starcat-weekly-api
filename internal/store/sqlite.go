@@ -42,12 +42,14 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 // 全新服务,无版本迁移:任何现存 *.db 直接 rm 即可。首启动调一次
 // CREATE TABLE IF NOT EXISTS 即可,不做 destructive migration。
 //
-// 三张表:
+// 五张表:
 //   - weekly_issues:阮一峰周刊 issue 元数据(number / published_at / source_url / parsed_at)
 //   - projects:周刊内出现的项目(repo_owner + repo_name 唯一),含 enrich 后的 18 个 GitHub 字段
 //   - zread_trending:zread 周 trending 独立表(week_start + owner + name 唯一),与 projects 解耦
+//   - discovery_repos:Show HN 发现的 GitHub 仓库元数据 + AI 分类状态
+//   - discovery_submissions:每次 Show HN 投稿事实；同一 repo 可保留多次投稿
 func (s *SQLiteStore) createSchema() error {
-	log.Println("[store] createSchema: weekly_issues + projects + zread_trending")
+	log.Println("[store] createSchema: weekly_issues + projects + zread_trending + discovery")
 	_, err := s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS weekly_issues (
 			number       INTEGER PRIMARY KEY,
@@ -124,11 +126,80 @@ func (s *SQLiteStore) createSchema() error {
 			UNIQUE(week_start, owner, name)
 		);
 
-		CREATE INDEX IF NOT EXISTS idx_zread_trending_owner_repo  ON zread_trending(owner, name);
-		CREATE INDEX IF NOT EXISTS idx_zread_trending_week       ON zread_trending(week_start DESC);
-		CREATE INDEX IF NOT EXISTS idx_zread_trending_wiki       ON zread_trending(wiki_id);
-		CREATE INDEX IF NOT EXISTS idx_zread_trending_gh_repo_id ON zread_trending(gh_repo_id);
-	`)
+			CREATE INDEX IF NOT EXISTS idx_zread_trending_owner_repo  ON zread_trending(owner, name);
+			CREATE INDEX IF NOT EXISTS idx_zread_trending_week       ON zread_trending(week_start DESC);
+			CREATE INDEX IF NOT EXISTS idx_zread_trending_wiki       ON zread_trending(wiki_id);
+			CREATE INDEX IF NOT EXISTS idx_zread_trending_gh_repo_id ON zread_trending(gh_repo_id);
+
+			CREATE TABLE IF NOT EXISTS discovery_repos (
+				owner                       TEXT COLLATE NOCASE NOT NULL,
+				repo                        TEXT COLLATE NOCASE NOT NULL,
+				gh_repo_id                  INTEGER,
+				description                 TEXT,
+				homepage                    TEXT,
+				language                    TEXT,
+				stars                       INTEGER NOT NULL DEFAULT 0,
+				forks                       INTEGER NOT NULL DEFAULT 0,
+				watchers                    INTEGER NOT NULL DEFAULT 0,
+				subscribers                 INTEGER NOT NULL DEFAULT 0,
+				open_issues                 INTEGER NOT NULL DEFAULT 0,
+				owner_avatar                TEXT,
+				default_branch              TEXT,
+				license_spdx                TEXT,
+				topics_json                 TEXT NOT NULL DEFAULT '[]',
+				pushed_at                   TEXT,
+				updated_at                  TEXT,
+				created_at                  TEXT,
+				is_archived                 INTEGER NOT NULL DEFAULT 0,
+				is_fork                     INTEGER NOT NULL DEFAULT 0,
+				is_private                  INTEGER NOT NULL DEFAULT 0,
+				readme_excerpt              TEXT NOT NULL DEFAULT '',
+				enrichment_status           TEXT NOT NULL DEFAULT 'pending',
+				enrich_attempts             INTEGER NOT NULL DEFAULT 0,
+				enrich_next_retry_at        TEXT,
+				enrich_error                TEXT,
+				enriched_at                 TEXT,
+				category                    TEXT NOT NULL DEFAULT 'unknown',
+				classify_status             TEXT NOT NULL DEFAULT 'pending',
+				classify_confidence         REAL,
+				classify_reason             TEXT,
+				classify_method             TEXT,
+				classify_model              TEXT,
+				classify_attempts           INTEGER NOT NULL DEFAULT 0,
+				classify_next_retry_at      TEXT,
+				classify_error              TEXT,
+				classified_at               TEXT,
+				first_seen_at               TEXT NOT NULL,
+				last_seen_at                TEXT NOT NULL,
+				record_updated_at           TEXT NOT NULL,
+				PRIMARY KEY (owner, repo)
+			);
+
+			CREATE TABLE IF NOT EXISTS discovery_submissions (
+				hn_id          INTEGER NOT NULL,
+				owner          TEXT COLLATE NOCASE NOT NULL,
+				repo           TEXT COLLATE NOCASE NOT NULL,
+				title          TEXT NOT NULL,
+				hn_url         TEXT NOT NULL,
+				source_url     TEXT,
+				score          INTEGER NOT NULL DEFAULT 0,
+				comments       INTEGER NOT NULL DEFAULT 0,
+				published_at   TEXT NOT NULL,
+				first_seen_at  TEXT NOT NULL,
+				last_seen_at   TEXT NOT NULL,
+				PRIMARY KEY (hn_id, owner, repo),
+				FOREIGN KEY (owner, repo) REFERENCES discovery_repos(owner, repo)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_discovery_repos_enrichment
+				ON discovery_repos(enrichment_status, enrich_next_retry_at);
+			CREATE INDEX IF NOT EXISTS idx_discovery_repos_classification
+				ON discovery_repos(classify_status, classify_next_retry_at, category);
+			CREATE INDEX IF NOT EXISTS idx_discovery_submissions_published
+				ON discovery_submissions(published_at DESC, score DESC);
+			CREATE INDEX IF NOT EXISTS idx_discovery_submissions_repo
+				ON discovery_submissions(owner, repo, published_at DESC);
+		`)
 	return err
 }
 
