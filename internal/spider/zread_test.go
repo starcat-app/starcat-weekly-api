@@ -30,7 +30,7 @@ func TestZreadSpider_RunOnce(t *testing.T) {
 				"data": [
 					{
 						"title": "This Week",
-						"time_span": {"start": "06/01", "end": "06/07"},
+						"time_span": {"start": "08/06", "end": "14/06"},
 						"repos": [
 							{
 								"repo_id": "123",
@@ -56,7 +56,7 @@ func TestZreadSpider_RunOnce(t *testing.T) {
 				"data": [
 					{
 						"title": "Last Week",
-						"time_span": {"start": "05/25", "end": "05/31"},
+						"time_span": {"start": "01/06", "end": "07/06"},
 						"repos": [
 							{
 								"repo_id": "456",

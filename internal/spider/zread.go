@@ -147,7 +147,8 @@ func (s *ZreadSpider) fetchAndParse(ctx context.Context) (*ZreadFetchResult, err
 	return &result, nil
 }
 
-// convertMMDD 把 "08/06" 转换成 "08-06"。
-func convertMMDD(mmdd string) string {
-	return fmt.Sprintf("%s-%s", mmdd[0:2], mmdd[3:5])
+// convertMMDD 把 zread 的 DD/MM 格式（如 "08/06" = 6 月 8 日）转换为 "MM-DD" 格式。
+// zread API 返回 DD/MM，但数据库存储统一使用 MM-DD 以构造 YYYY-MM-DD。
+func convertMMDD(ddmm string) string {
+	return fmt.Sprintf("%s-%s", ddmm[3:5], ddmm[0:2])
 }

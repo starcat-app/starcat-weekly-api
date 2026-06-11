@@ -119,7 +119,9 @@ func main() {
 	wikiNotifier := notifier.NewWikiNotifier()
 
 	// Initialize scheduler
-	sch := scheduler.New(s, enr, wikiNotifier, repoDir, discoveryService, envOrDefault("DISCOVERY_CRON", "17 * * * *"))
+	sch := scheduler.New(s, enr, wikiNotifier, repoDir, discoveryService,
+		envOrDefault("DISCOVERY_CRON", "17 * * * *"),
+		envOrDefault("ZREAD_TRENDING_CRON", "0 6 * * *"))
 
 	// Initialize HTTP handler
 	wh := handler.NewWeeklyHandler(s, sch.Sync, sch.SyncZread)

@@ -27,6 +27,7 @@ type Scheduler struct {
 	wikiNotifier  *notifier.WikiNotifier
 	discovery     *discovery.Service
 	discoveryCron string
+	zreadCron     string
 	repoDir       string
 	cron          *cron.Cron
 	funcMu        sync.Mutex
@@ -34,9 +35,12 @@ type Scheduler struct {
 }
 
 // New 创建调度器
-func New(s store.Store, enr *enricher.Enricher, wn *notifier.WikiNotifier, repoDir string, discoveryService *discovery.Service, discoveryCron string) *Scheduler {
+func New(s store.Store, enr *enricher.Enricher, wn *notifier.WikiNotifier, repoDir string, discoveryService *discovery.Service, discoveryCron string, zreadCron string) *Scheduler {
 	if discoveryCron == "" {
 		discoveryCron = "17 * * * *"
+	}
+	if zreadCron == "" {
+		zreadCron = "0 6 * * *" // 默认每天 06:00 UTC
 	}
 	return &Scheduler{
 		store:         s,
@@ -45,6 +49,7 @@ func New(s store.Store, enr *enricher.Enricher, wn *notifier.WikiNotifier, repoD
 		repoDir:       repoDir,
 		discovery:     discoveryService,
 		discoveryCron: discoveryCron,
+		zreadCron:     zreadCron,
 		cron:          cron.New(),
 		running:       make(map[string]bool),
 	}
@@ -70,9 +75,8 @@ func (s *Scheduler) Start() {
 		log.Printf("[scheduler] cron add (阮一峰): %v", err)
 	}
 
-	// v0.5 R-02 新增：周一 06:00 UTC 拉 zread 周 trending
-	// 详见 19-wiki集成.md §8.2.3 — zread 周一 00:00 UTC 更新，留 6h buffer
-	_, err = s.cron.AddFunc("0 0 6 * * 1", s.runZreadFetch)
+	// v0.5 R-02：zread 周 trending 同步，cron 由 ZREAD_TRENDING_CRON 环境变量控制
+	_, err = s.cron.AddFunc(s.zreadCron, s.runZreadFetch)
 	if err != nil {
 		log.Printf("[scheduler] cron add (zread): %v", err)
 	}
@@ -87,7 +91,7 @@ func (s *Scheduler) Start() {
 	}
 
 	s.cron.Start()
-	log.Printf("[scheduler] cron 已启动 (阮一峰每小时第 7 分 + zread 周一 06:00 + discovery %s)", s.discoveryCron)
+	log.Printf("[scheduler] cron 已启动 (阮一峰每小时第 7 分 + zread %s + discovery %s)", s.zreadCron, s.discoveryCron)
 }
 
 // Stop 停止调度器
