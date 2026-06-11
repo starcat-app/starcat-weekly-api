@@ -98,6 +98,10 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", wh.Healthz) // Health check (unauthenticated)
 
+	// R-03 (2026-06-11): /api/v1/ping 专门给 Starcat 客户端「测试连接」按钮用，
+	// 在 middleware 后面挂——同时验证服务可达 + Bearer Key 正确。详见 handler/ping.go。
+	mux.Handle("GET /api/v1/ping", authMW.Wrap(handler.HandlePingV1("weekly")))
+
 	// API V1 Endpoints (authenticated)
 	mux.Handle("GET /api/v1/weekly", authMW.Wrap(http.HandlerFunc(wh.HandleProjectsV1)))
 	mux.Handle("GET /api/v1/weekly/{owner}/{repo}", authMW.Wrap(http.HandlerFunc(wh.HandleProjectByOwnerRepoV1)))
@@ -128,6 +132,7 @@ func main() {
 	// Start HTTP server
 	log.Printf("starcat-weekly-api starting on port %s", port)
 	log.Printf("V1 Endpoints (authenticated):")
+	log.Printf("  GET  /api/v1/ping               - Connectivity probe for Starcat client")
 	log.Printf("  GET  /api/v1/weekly             - List projects")
 	log.Printf("  GET  /api/v1/weekly/{o}/{r}     - Get single project")
 	log.Printf("  GET  /api/v1/issues             - List issues")

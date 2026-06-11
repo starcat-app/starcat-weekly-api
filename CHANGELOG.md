@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+### Added
+- **R-03 (2026-06-11)**：新增 `GET /api/v1/ping` 端点，专给 Starcat 客户端「测试连接」按钮用。
+  - 走 BearerAuth 中间件，鉴权通过返回 200 + envelope `{data: {service: "weekly", ok: true}}`；
+    无效 / 缺失 Key → 401；服务故障 → 5xx。
+  - 实现：`internal/handler/ping.go` + `internal/handler/ping_test.go`（7 case）。
+  - 设计意图：让客户端用一个语义明确的端点同时验「服务可达 + Key 正确」，
+    不再借用业务 endpoint 的 GET 来当 auth probe。
+  - 跨项目约定：本 `ping.go` 与 trending / sharing / wiki 三个项目「除 import path 外 byte-level 一致」。
+
 ## [0.5.2] - 2026-06-10
 
 ### Changed
