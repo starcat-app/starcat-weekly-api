@@ -25,11 +25,9 @@ func TestDiscoveryKeepsSubmissionsSeparateAndQueriesLatest(t *testing.T) {
 	if err := s.UpdateDiscoveryEnriched(repo, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateDiscoveryClassified("acme", "agent", "agent", 0.9, "agent framework", "llm", "test", false, now); err != nil {
-		t.Fatal(err)
-	}
 
-	items, total, err := s.QueryDiscovery(model.DiscoveryQuery{Category: "all", Page: 1, PageSize: 30, Since: now.Add(-24 * time.Hour)})
+	// v1.2：enrichment_status='ready' 即进入 API 可查询状态
+	items, total, err := s.QueryDiscovery(model.DiscoveryQuery{Page: 1, PageSize: 30, Since: now.Add(-24 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,24 +36,23 @@ func TestDiscoveryKeepsSubmissionsSeparateAndQueriesLatest(t *testing.T) {
 	}
 }
 
-func TestDiscoveryClassificationCooldownCanReenterQueue(t *testing.T) {
+func TestDiscoveryEnrichmentFailureRetries(t *testing.T) {
 	s := newDiscoveryTestStore(t)
 	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
 	upsertDiscoveryTestSubmission(t, s, 1, "acme", "agent", 5, now, now)
-	repo := model.DiscoveryRepo{Owner: "acme", Repo: "agent", GhRepoID: 42, Topics: []string{"ai"}}
-	if err := s.UpdateDiscoveryEnriched(repo, now); err != nil {
+
+	retryAt := now.Add(time.Hour)
+	if err := s.UpdateDiscoveryEnrichmentFailure("acme", "agent", "timeout", retryAt); err != nil {
 		t.Fatal(err)
 	}
-	cooldownEnd := now.Add(7 * 24 * time.Hour)
-	if err := s.UpdateDiscoveryClassificationFailure("acme", "agent", "timeout", cooldownEnd, true); err != nil {
-		t.Fatal(err)
-	}
-	before, err := s.GetDiscoveryClassificationCandidates(20, cooldownEnd.Add(-time.Second))
+	// 未到重试时间，不应出现在候选列表
+	before, err := s.GetDiscoveryEnrichmentCandidates(20, retryAt.Add(-time.Second))
 	if err != nil || len(before) != 0 {
-		t.Fatalf("should still cool down: %d, %v", len(before), err)
+		t.Fatalf("should still wait: %d, %v", len(before), err)
 	}
-	after, err := s.GetDiscoveryClassificationCandidates(20, cooldownEnd.Add(time.Second))
-	if err != nil || len(after) != 1 || after[0].ClassifyAttempts != 0 {
+	// 已到重试时间，应重新入队
+	after, err := s.GetDiscoveryEnrichmentCandidates(20, retryAt.Add(time.Second))
+	if err != nil || len(after) != 1 {
 		t.Fatalf("should reenter queue: %#v, %v", after, err)
 	}
 }

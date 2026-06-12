@@ -1,11 +1,10 @@
-// Package handler 提供 AI Discovery 查询与同步端点。
+// Package handler 提供 AI Discovery 查询与同步端点（v1.2：移除 category 分类参数）。
 package handler
 
 import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/dong4j/starcat-weekly-api/internal/model"
@@ -29,19 +28,8 @@ func NewDiscoveryHandler(store DiscoveryStore, syncFn func()) *DiscoveryHandler 
 	return &DiscoveryHandler{store: store, sync: syncFn, now: time.Now}
 }
 
-// HandleListV1 GET /api/v1/discovery?category=all&page=1&page_size=30。
+// HandleListV1 GET /api/v1/discovery?page=1&page_size=30。
 func (h *DiscoveryHandler) HandleListV1(w http.ResponseWriter, r *http.Request) {
-	category := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("category")))
-	if category == "" {
-		category = "all"
-	}
-	if category != "all" && !model.ValidDiscoveryCategory(category) {
-		writeError(w, http.StatusBadRequest, "INVALID_CATEGORY", "invalid discovery category", map[string]any{
-			"category": category,
-			"allowed":  []string{"all", "agent", "coding", "mcp", "rag", "infra", "model", "skill"},
-		})
-		return
-	}
 	page := positiveInt(r.URL.Query().Get("page"), 1)
 	pageSize := positiveInt(r.URL.Query().Get("page_size"), 30)
 	if pageSize > 50 {
@@ -49,7 +37,7 @@ func (h *DiscoveryHandler) HandleListV1(w http.ResponseWriter, r *http.Request) 
 	}
 
 	items, total, err := h.store.QueryDiscovery(model.DiscoveryQuery{
-		Category: category, Page: page, PageSize: pageSize,
+		Page: page, PageSize: pageSize,
 		Since: h.now().UTC().Add(-24 * time.Hour),
 	})
 	if err != nil {
@@ -67,8 +55,8 @@ func (h *DiscoveryHandler) HandleListV1(w http.ResponseWriter, r *http.Request) 
 
 // HandleDetailV1 GET /api/v1/discovery/{owner}/{repo}。
 func (h *DiscoveryHandler) HandleDetailV1(w http.ResponseWriter, r *http.Request) {
-	owner := strings.TrimSpace(r.PathValue("owner"))
-	repo := strings.TrimSpace(r.PathValue("repo"))
+	owner := r.PathValue("owner")
+	repo := r.PathValue("repo")
 	if owner == "" || repo == "" {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "owner and repo are required", nil)
 		return

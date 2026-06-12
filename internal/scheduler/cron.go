@@ -131,7 +131,7 @@ func (s *Scheduler) SyncZread() {
 	go s.runZreadFetch()
 }
 
-// runDiscovery 执行 Show HN collect -> GitHub enrich -> LLM classify。
+// runDiscovery 执行 Show HN collect → GitHub enrich 两阶段（v1.2：移除 LLM classify）。
 func (s *Scheduler) runDiscovery() {
 	if s.discovery == nil {
 		return
@@ -147,8 +147,8 @@ func (s *Scheduler) runDiscovery() {
 		log.Printf("[scheduler] discovery sync: %v", err)
 		return
 	}
-	log.Printf("[scheduler] discovery sync 完成: submissions=%d enriched=%d classified=%d rejected=%d failures=%d",
-		stats.Submissions, stats.Enriched, stats.Classified, stats.Rejected, stats.Failures)
+	log.Printf("[scheduler] discovery sync 完成: submissions=%d enriched=%d failures=%d",
+		stats.Submissions, stats.Enriched, stats.Failures)
 }
 
 // SyncDiscovery 异步触发 Discovery 同步，供独立 Admin endpoint 复用。

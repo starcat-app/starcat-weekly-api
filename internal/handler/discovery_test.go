@@ -28,12 +28,12 @@ func (f *fakeDiscoveryStore) GetDiscoveryByOwnerRepo(string, string) (*model.Dis
 func TestDiscoveryListReturnsEnvelopeAndPagination(t *testing.T) {
 	store := &fakeDiscoveryStore{items: []model.DiscoveryItemDTO{{
 		Repo:      model.StarcatRepoCardDTO{GhRepoID: 42, FullName: "acme/agent", Owner: "acme", Repo: "agent"},
-		Discovery: model.DiscoveryExtension{HNID: 1, Category: "agent"},
+		Discovery: model.DiscoveryExtension{HNID: 1, HNTitle: "Show HN: Agent", HNScore: 10},
 	}}, total: 31}
 	h := NewDiscoveryHandler(store, func() {})
 	h.now = func() time.Time { return time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC) }
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/discovery?category=agent&page=1&page_size=30", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discovery?page=1&page_size=30", nil)
 	recorder := httptest.NewRecorder()
 	h.HandleListV1(recorder, req)
 	if recorder.Code != http.StatusOK {
@@ -49,15 +49,6 @@ func TestDiscoveryListReturnsEnvelopeAndPagination(t *testing.T) {
 	}
 	if response.SchemaVersion != 1 || len(response.Data) != 1 || response.Meta.NextPage == nil || *response.Meta.NextPage != 2 {
 		t.Fatalf("unexpected response: %#v", response)
-	}
-}
-
-func TestDiscoveryListRejectsInvalidCategory(t *testing.T) {
-	h := NewDiscoveryHandler(&fakeDiscoveryStore{}, func() {})
-	recorder := httptest.NewRecorder()
-	h.HandleListV1(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/discovery?category=chatbot", nil))
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("want 400, got %d", recorder.Code)
 	}
 }
 

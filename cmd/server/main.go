@@ -60,7 +60,7 @@ func main() {
 	apiKeys := strings.Split(apiKeysStr, ",")
 	authMW := middleware.NewBearerAuth(apiKeys)
 
-	// Discovery 的手动同步会消耗 GitHub 与 LLM 配额，不能复用会被客户端携带的 API_KEYS。
+	// Discovery 的手动同步会消耗 GitHub 配额，不能复用会被客户端携带的 API_KEYS。
 	// 未配置时中间件白名单为空，路由保持 401，不阻断普通查询与 cron。
 	adminKeys := splitNonEmpty(os.Getenv("ADMIN_API_KEYS"))
 	adminAuthMW := middleware.NewBearerAuth(adminKeys)
@@ -93,28 +93,14 @@ func main() {
 	ghClient := github.NewClient(pool, github.NewRateLimitHandler(720*time.Millisecond)) // 5000/h ≈ 720ms
 	enr := enricher.NewEnricher(s, ghClient)
 
-	// AI Discovery 复用同一个 GitHub Client，避免模块间配额误判。
-	// LLM key 为空时仍会 collect/enrich，只跳过 classify。
+	// AI Discovery 复用同一个 GitHub Client（v1.2：移除 LLM 分类，仅 collect → enrich 两阶段）。
 	hnClient := discovery.NewHNClient(nil)
 	discoveryGitHub := discovery.NewGitHubClient(ghClient)
-	discoveryConfig := discovery.Config{
-		HNLimit:             envInt("DISCOVERY_HN_LIMIT", 30),
-		BatchSize:           envInt("DISCOVERY_BATCH_SIZE", 20),
-		ConfidenceThreshold: envFloat("DISCOVERY_CONFIDENCE_THRESHOLD", 0.6),
-		MaxClassifyAttempts: envInt("DISCOVERY_MAX_CLASSIFY_ATTEMPTS", 3),
-		ClassifyCooldown:    time.Duration(envInt("DISCOVERY_CLASSIFY_COOLDOWN_DAYS", 7)) * 24 * time.Hour,
-		RetryDelay:          time.Duration(envInt("DISCOVERY_RETRY_DELAY_MINUTES", 60)) * time.Minute,
-	}
-	var discoveryService *discovery.Service
-	if llmKey := strings.TrimSpace(os.Getenv("LLM_API_KEY")); llmKey != "" {
-		llmBase := envOrDefault("LLM_API_BASE", "https://api.deepseek.com")
-		llmModel := envOrDefault("LLM_MODEL", "deepseek-chat")
-		classifier := discovery.NewLLMClassifier(llmBase, llmKey, llmModel, nil)
-		discoveryService = discovery.NewService(s, hnClient, discoveryGitHub, classifier, discoveryConfig)
-	} else {
-		log.Println("[discovery] LLM_API_KEY not configured; classification stage disabled")
-		discoveryService = discovery.NewService(s, hnClient, discoveryGitHub, nil, discoveryConfig)
-	}
+	discoveryService := discovery.NewService(s, hnClient, discoveryGitHub, discovery.Config{
+		HNLimit:    envInt("DISCOVERY_HN_LIMIT", 30),
+		BatchSize:  envInt("DISCOVERY_BATCH_SIZE", 20),
+		RetryDelay: time.Duration(envInt("DISCOVERY_RETRY_DELAY_MINUTES", 60)) * time.Minute,
+	})
 
 	// Wiki Notifier（增量预热 wiki-api 缓存，通过 WIKI_API_KEY 控制开关）
 	wikiNotifier := notifier.NewWikiNotifier()
@@ -195,14 +181,6 @@ func envOrDefault(key, fallback string) string {
 
 func envInt(key string, fallback int) int {
 	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
-	if err != nil || value <= 0 {
-		return fallback
-	}
-	return value
-}
-
-func envFloat(key string, fallback float64) float64 {
-	value, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv(key)), 64)
 	if err != nil || value <= 0 {
 		return fallback
 	}

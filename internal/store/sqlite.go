@@ -46,7 +46,7 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 //   - weekly_issues:阮一峰周刊 issue 元数据(number / published_at / source_url / parsed_at)
 //   - projects:周刊内出现的项目(repo_owner + repo_name 唯一),含 enrich 后的 18 个 GitHub 字段
 //   - zread_trending:zread 周 trending 独立表(week_start + owner + name 唯一),与 projects 解耦
-//   - discovery_repos:Show HN 发现的 GitHub 仓库元数据 + AI 分类状态
+//   - discovery_repos:Show HN 发现的 GitHub 仓库元数据（v1.2：移除 AI 分类）
 //   - discovery_submissions:每次 Show HN 投稿事实；同一 repo 可保留多次投稿
 func (s *SQLiteStore) createSchema() error {
 	log.Println("[store] createSchema: weekly_issues + projects + zread_trending + discovery")
@@ -159,16 +159,6 @@ func (s *SQLiteStore) createSchema() error {
 				enrich_next_retry_at        TEXT,
 				enrich_error                TEXT,
 				enriched_at                 TEXT,
-				category                    TEXT NOT NULL DEFAULT 'unknown',
-				classify_status             TEXT NOT NULL DEFAULT 'pending',
-				classify_confidence         REAL,
-				classify_reason             TEXT,
-				classify_method             TEXT,
-				classify_model              TEXT,
-				classify_attempts           INTEGER NOT NULL DEFAULT 0,
-				classify_next_retry_at      TEXT,
-				classify_error              TEXT,
-				classified_at               TEXT,
 				first_seen_at               TEXT NOT NULL,
 				last_seen_at                TEXT NOT NULL,
 				record_updated_at           TEXT NOT NULL,
@@ -193,8 +183,6 @@ func (s *SQLiteStore) createSchema() error {
 
 			CREATE INDEX IF NOT EXISTS idx_discovery_repos_enrichment
 				ON discovery_repos(enrichment_status, enrich_next_retry_at);
-			CREATE INDEX IF NOT EXISTS idx_discovery_repos_classification
-				ON discovery_repos(classify_status, classify_next_retry_at, category);
 			CREATE INDEX IF NOT EXISTS idx_discovery_submissions_published
 				ON discovery_submissions(published_at DESC, score DESC);
 			CREATE INDEX IF NOT EXISTS idx_discovery_submissions_repo
