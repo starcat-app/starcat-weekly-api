@@ -32,6 +32,9 @@ var ErrRateLimited = errors.New("rate limited")
 // 所有指针字段在 API 返回 null 时为 nil，调用方自行映射到各自的 model。
 type RepoResponse struct {
 	ID            int64
+	Owner         string
+	Name          string
+	FullName      string
 	Description   *string
 	Homepage      *string
 	Language      *string
@@ -280,6 +283,8 @@ func (e *HTTPError) Error() string { return e.Message }
 
 type githubRepoAPIResponse struct {
 	ID            int64    `json:"id"`
+	Name          string   `json:"name"`
+	FullName      string   `json:"full_name"`
 	Description   *string  `json:"description"`
 	Homepage      *string  `json:"homepage"`
 	Language      *string  `json:"language"`
@@ -300,6 +305,7 @@ type githubRepoAPIResponse struct {
 		SpdxID *string `json:"spdx_id"`
 	} `json:"license"`
 	Owner *struct {
+		Login     string  `json:"login"`
 		AvatarURL *string `json:"avatar_url"`
 	} `json:"owner"`
 }
@@ -307,6 +313,8 @@ type githubRepoAPIResponse struct {
 func (r *githubRepoAPIResponse) toRepoResponse() *RepoResponse {
 	out := &RepoResponse{
 		ID:            r.ID,
+		Name:          r.Name,
+		FullName:      r.FullName,
 		Description:   r.Description,
 		Homepage:      r.Homepage,
 		Language:      r.Language,
@@ -328,6 +336,7 @@ func (r *githubRepoAPIResponse) toRepoResponse() *RepoResponse {
 		out.LicenseSpdx = r.License.SpdxID
 	}
 	if r.Owner != nil {
+		out.Owner = r.Owner.Login
 		out.OwnerAvatar = r.Owner.AvatarURL
 	}
 	return out

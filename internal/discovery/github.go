@@ -3,9 +3,7 @@ package discovery
 import (
 	"context"
 	"errors"
-	"regexp"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/dong4j/starcat-weekly-api/internal/github"
 	"github.com/dong4j/starcat-weekly-api/internal/model"
@@ -25,24 +23,19 @@ func NewGitHubClient(client *github.Client) *GitHubClient {
 	return &GitHubClient{client: client}
 }
 
-// Fetch 返回完整 metadata；README 404 视为"无 README"而不是仓库不可用。
-func (c *GitHubClient) Fetch(ctx context.Context, owner, repo string) (model.DiscoveryRepo, error) {
+// Fetch returns GitHub metadata in the canonical R-04 repo model.
+func (c *GitHubClient) Fetch(ctx context.Context, owner, repo string) (model.GitHubRepo, error) {
 	resp, err := c.client.GetRepo(ctx, owner, repo)
 	if err != nil {
 		if errors.Is(err, github.ErrRepoNotFound) {
-			return model.DiscoveryRepo{}, &github.HTTPError{StatusCode: 404, Message: "repo not found"}
+			return model.GitHubRepo{}, &github.HTTPError{StatusCode: 404, Message: "repo not found"}
 		}
-		return model.DiscoveryRepo{}, err
+		return model.GitHubRepo{}, err
 	}
 
-	// README：404 不视为错误
-	readme := ""
-	if content, err := c.client.GetReadme(ctx, owner, repo); err == nil {
-		readme = sanitizeREADME(content, 2000)
-	}
-
-	result := model.DiscoveryRepo{
-		Owner: owner, Repo: repo, GhRepoID: resp.ID,
+	canonicalOwner, canonicalName, canonicalFullName := canonicalNames(owner, repo, resp.Owner, resp.Name, resp.FullName)
+	result := model.GitHubRepo{
+		Owner: canonicalOwner, Name: canonicalName, FullName: canonicalFullName, GhRepoID: resp.ID,
 		Description:   stringValue(resp.Description),
 		Homepage:      stringValue(resp.Homepage),
 		Language:      stringValue(resp.Language),
@@ -59,7 +52,7 @@ func (c *GitHubClient) Fetch(ctx context.Context, owner, repo string) (model.Dis
 		IsArchived:    resp.Archived,
 		IsFork:        resp.Fork,
 		IsPrivate:     resp.Private,
-		READMEExcerpt: readme,
+		IsAvailable:   true,
 	}
 	if resp.OwnerAvatar != nil {
 		result.OwnerAvatar = *resp.OwnerAvatar
@@ -70,37 +63,22 @@ func (c *GitHubClient) Fetch(ctx context.Context, owner, repo string) (model.Dis
 	return result, nil
 }
 
-var (
-	markdownImagePattern = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`)
-	htmlTagPattern       = regexp.MustCompile(`<[^>]+>`)
-	markdownLinkPattern  = regexp.MustCompile(`\[([^\]]+)\]\([^)]*\)`)
-)
-
-func sanitizeREADME(raw string, maxRunes int) string {
-	cleaned := markdownImagePattern.ReplaceAllString(raw, "")
-	cleaned = markdownLinkPattern.ReplaceAllString(cleaned, "$1")
-	cleaned = htmlTagPattern.ReplaceAllString(cleaned, " ")
-	lines := strings.Split(cleaned, "\n")
-	kept := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		lower := strings.ToLower(trimmed)
-		if trimmed == "" || strings.Contains(lower, "shields.io") || lower == "table of contents" || lower == "toc" {
-			continue
-		}
-		kept = append(kept, trimmed)
-	}
-	cleaned = strings.Join(kept, "\n")
-	if utf8.RuneCountInString(cleaned) <= maxRunes {
-		return cleaned
-	}
-	runes := []rune(cleaned)
-	return string(runes[:maxRunes])
-}
-
 func stringValue(value *string) string {
 	if value == nil {
 		return ""
 	}
 	return strings.TrimSpace(*value)
+}
+
+func canonicalNames(inputOwner, inputName, owner, name, fullName string) (string, string, string) {
+	if owner == "" {
+		owner = inputOwner
+	}
+	if name == "" {
+		name = inputName
+	}
+	if fullName == "" {
+		fullName = owner + "/" + name
+	}
+	return owner, name, fullName
 }

@@ -4,6 +4,8 @@ package scheduler
 import (
 	"context"
 	"log"
+	"os"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -61,15 +63,11 @@ func (s *Scheduler) Start() {
 	repos := s.sync()
 	s.wikiNotifier.NotifyRepos(repos)
 
-	log.Println("[scheduler] 启动元数据补全...")
-	s.enricher.EnrichAll()
-
-	// 每小时同步一次（取第 7 分钟避免整点拥挤）
-	_, err := s.cron.AddFunc("7 * * * *", func() {
+	// R-04: weekly 历史数据不需要小时级刷新。默认每周一 00:00 UTC 更新一次。
+	_, err := s.cron.AddFunc("0 0 * * 1", func() {
 		log.Println("[scheduler] 定时同步...")
 		repos := s.sync()
 		s.wikiNotifier.NotifyRepos(repos)
-		s.enricher.EnrichBatch()
 	})
 	if err != nil {
 		log.Printf("[scheduler] cron add (阮一峰): %v", err)
@@ -91,7 +89,7 @@ func (s *Scheduler) Start() {
 	}
 
 	s.cron.Start()
-	log.Printf("[scheduler] cron 已启动 (阮一峰每小时第 7 分 + zread %s + discovery %s)", s.zreadCron, s.discoveryCron)
+	log.Printf("[scheduler] cron 已启动 (weekly Mon 00:00 UTC + zread %s + discovery %s)", s.zreadCron, s.discoveryCron)
 }
 
 // Stop 停止调度器
@@ -112,16 +110,30 @@ func (s *Scheduler) runZreadFetch() {
 
 	log.Println("[scheduler] 拉取 zread 周 trending...")
 	sp := spider.NewZreadSpider(s.store.(*store.SQLiteStore))
-	if err := sp.RunOnce(context.Background()); err != nil {
+	rows, err := sp.FetchRows(context.Background())
+	if err != nil {
 		log.Printf("[scheduler] zread fetch: %v", err)
 		return
 	}
-	// 拉取成功后补全 GitHub 元数据（gh_repo_id / forks / license 等 14 字段）
-	s.enricher.EnrichAllZread()
+	ctx := context.Background()
+	written := 0
+	for _, row := range rows {
+		repo, err := s.enricher.EnsureGitHubRepo(ctx, row.Owner, row.Name, false)
+		if err != nil {
+			log.Printf("[scheduler] zread ensure %s/%s: %v", row.Owner, row.Name, err)
+			continue
+		}
+		if err := s.store.AttachZreadEvent(repo.GhRepoID, row); err != nil {
+			log.Printf("[scheduler] zread attach %s/%s: %v", row.Owner, row.Name, err)
+			continue
+		}
+		written++
+	}
+	log.Printf("[scheduler] zread fetch 完成: rows=%d attached=%d", len(rows), written)
 
 	// 异步通知 wiki-api 预热本次 zread 拉取的 repo
 	if s.wikiNotifier.IsEnabled() {
-		repos := s.store.GetZreadRepos() // 从 DB 提取所有 zread repo
+		repos := s.store.GetAllSourceRepos()
 		s.wikiNotifier.NotifyRepos(repos)
 	}
 }
@@ -205,19 +217,28 @@ func (s *Scheduler) sync() []string {
 			continue
 		}
 
-		// 写入期号信息
 		srcURL := "https://github.com/ruanyf/weekly/blob/master/docs/issue-" + strconv.Itoa(issue.Number) + ".md"
-		s.store.UpsertIssue(&model.WeeklyIssue{
-			Number:    issue.Number,
-			SourceURL: srcURL,
-			ParsedAt:  time.Now().UTC(),
-		})
+		publishedAt := issuePublishedAt(issue.Path)
+		weeklyIssue := model.WeeklyIssue{
+			Number:      issue.Number,
+			PublishedAt: publishedAt,
+			SourceURL:   srcURL,
+			ParsedAt:    time.Now().UTC(),
+		}
+		if err := s.store.UpsertIssue(&weeklyIssue); err != nil {
+			log.Printf("[scheduler] upsert issue-%d: %v", issue.Number, err)
+			continue
+		}
 
 		// 写入项目
 		for j := range projects {
-			if err := s.store.UpsertProject(&projects[j]); err != nil {
-				log.Printf("[scheduler] upsert %s/%s: %v",
-					projects[j].RepoOwner, projects[j].RepoName, err)
+			repo, err := s.enricher.EnsureGitHubRepo(context.Background(), projects[j].RepoOwner, projects[j].RepoName, false)
+			if err != nil {
+				log.Printf("[scheduler] ensure %s/%s: %v", projects[j].RepoOwner, projects[j].RepoName, err)
+				continue
+			}
+			if err := s.store.AttachWeeklyEvent(repo.GhRepoID, projects[j], weeklyIssue); err != nil {
+				log.Printf("[scheduler] attach weekly %s/%s: %v", projects[j].RepoOwner, projects[j].RepoName, err)
 				continue
 			}
 			allRepos = append(allRepos, projects[j].RepoOwner+"/"+projects[j].RepoName)
@@ -236,3 +257,21 @@ func (s *Scheduler) sync() []string {
 	log.Printf("[scheduler] 同步完成: %d 期新/更新, %d 个 repo", newCount, len(allRepos))
 	return allRepos
 }
+
+func issuePublishedAt(path string) time.Time {
+	content, err := os.ReadFile(path)
+	if err == nil {
+		if matches := issueAssetDatePattern.FindSubmatch(content); len(matches) == 2 {
+			if parsed, err := time.ParseInLocation("20060102", string(matches[1]), time.UTC); err == nil {
+				return parsed.UTC()
+			}
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Now().UTC()
+	}
+	return info.ModTime().UTC()
+}
+
+var issueAssetDatePattern = regexp.MustCompile(`bg(\d{8})`)

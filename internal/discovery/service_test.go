@@ -10,30 +10,17 @@ import (
 
 // serviceRepositoryFake 只记录编排层的状态转换；SQL 行为由 store/discovery_test.go 单独覆盖。
 type serviceRepositoryFake struct {
-	enrichmentCandidates []model.DiscoveryRepo
-	submissions          []model.DiscoverySubmission
-	enriched             []model.DiscoveryRepo
+	repos       []model.GitHubRepo
+	submissions []model.DiscoverySubmission
 }
 
-func (f *serviceRepositoryFake) UpsertDiscoverySubmission(submission model.DiscoverySubmission) error {
+func (f *serviceRepositoryFake) UpsertGitHubRepo(repo model.GitHubRepo) error {
+	f.repos = append(f.repos, repo)
+	return nil
+}
+
+func (f *serviceRepositoryFake) AttachDiscoveryEvent(_ int64, submission model.DiscoverySubmission) error {
 	f.submissions = append(f.submissions, submission)
-	return nil
-}
-
-func (f *serviceRepositoryFake) GetDiscoveryEnrichmentCandidates(int, time.Time) ([]model.DiscoveryRepo, error) {
-	return f.enrichmentCandidates, nil
-}
-
-func (f *serviceRepositoryFake) UpdateDiscoveryEnriched(repo model.DiscoveryRepo, _ time.Time) error {
-	f.enriched = append(f.enriched, repo)
-	return nil
-}
-
-func (f *serviceRepositoryFake) UpdateDiscoveryEnrichmentFailure(string, string, string, time.Time) error {
-	return nil
-}
-
-func (f *serviceRepositoryFake) MarkDiscoveryUnavailable(string, string, string, time.Time) error {
 	return nil
 }
 
@@ -43,21 +30,19 @@ func (f submissionFetcherFake) Fetch(context.Context, int, time.Time) ([]model.D
 	return f.submissions, nil
 }
 
-type repoFetcherFake struct{ repo model.DiscoveryRepo }
+type repoFetcherFake struct{ repo model.GitHubRepo }
 
-func (f repoFetcherFake) Fetch(context.Context, string, string) (model.DiscoveryRepo, error) {
+func (f repoFetcherFake) Fetch(context.Context, string, string) (model.GitHubRepo, error) {
 	return f.repo, nil
 }
 
 func TestServiceRunOnceExecutesCollectAndEnrich(t *testing.T) {
 	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
-	repository := &serviceRepositoryFake{
-		enrichmentCandidates: []model.DiscoveryRepo{{Owner: "acme", Repo: "agent"}},
-	}
+	repository := &serviceRepositoryFake{}
 	service := NewService(
 		repository,
 		submissionFetcherFake{submissions: []model.DiscoverySubmission{{HNID: 1, Owner: "acme", Repo: "agent"}}},
-		repoFetcherFake{repo: model.DiscoveryRepo{Owner: "acme", Repo: "agent", GhRepoID: 42}},
+		repoFetcherFake{repo: model.GitHubRepo{Owner: "acme", Name: "agent", GhRepoID: 42, IsAvailable: true}},
 		Config{},
 	)
 	service.now = func() time.Time { return now }
@@ -69,8 +54,8 @@ func TestServiceRunOnceExecutesCollectAndEnrich(t *testing.T) {
 	if stats.Submissions != 1 || stats.Enriched != 1 || stats.Failures != 0 {
 		t.Fatalf("unexpected stats: %#v", stats)
 	}
-	if len(repository.submissions) != 1 || len(repository.enriched) != 1 {
-		t.Fatalf("pipeline writes missing: submissions=%d enriched=%d",
-			len(repository.submissions), len(repository.enriched))
+	if len(repository.submissions) != 1 || len(repository.repos) != 1 {
+		t.Fatalf("pipeline writes missing: submissions=%d repos=%d",
+			len(repository.submissions), len(repository.repos))
 	}
 }

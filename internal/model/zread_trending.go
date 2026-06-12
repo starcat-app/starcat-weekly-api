@@ -55,7 +55,7 @@ type ZreadTrending struct {
 	FetchedAt string `json:"fetched_at"` // RFC3339
 }
 
-// ZreadTrendingEnvelope /api/v1/zread 端点 data 字段的具体类型。
+// ZreadTrendingEnvelope 是 R-04 之前 zread 独立端点使用过的响应 DTO。
 //
 // 抽出来让 writeJSONWithMeta 的类型推断更稳，避免 map[string]any 与 envelope JSON 字段名漂移。
 // 顶层 envelope 的 schema_version / meta 不变；通过 data 内嵌的 week_label

@@ -1,87 +1,30 @@
-// Package handler 提供 AI Discovery 查询与同步端点（v1.2：移除 category 分类参数）。
 package handler
 
 import (
-	"log"
 	"net/http"
 	"strconv"
 	"time"
-
-	"github.com/dong4j/starcat-weekly-api/internal/model"
 )
 
-// DiscoveryStore 是 handler 所需的只读存储边界。
-type DiscoveryStore interface {
-	QueryDiscovery(params model.DiscoveryQuery) ([]model.DiscoveryItemDTO, int, error)
-	GetDiscoveryByOwnerRepo(owner, repo string) (*model.DiscoveryItemDTO, error)
-}
-
-// DiscoveryHandler 处理列表、详情与管理员同步触发。
+// DiscoveryHandler keeps the Show HN manual sync endpoint.
+//
+// R-04 folds Discovery reads into /api/v1/repos and /api/v1/repos/{gh_repo_id}.
 type DiscoveryHandler struct {
-	store DiscoveryStore
-	sync  func()
-	now   func() time.Time
+	sync func()
 }
 
-// NewDiscoveryHandler 创建 Discovery handler。
-func NewDiscoveryHandler(store DiscoveryStore, syncFn func()) *DiscoveryHandler {
-	return &DiscoveryHandler{store: store, sync: syncFn, now: time.Now}
+func NewDiscoveryHandler(_ any, syncFn func()) *DiscoveryHandler {
+	return &DiscoveryHandler{sync: syncFn}
 }
 
-// HandleListV1 GET /api/v1/discovery?page=1&page_size=30。
-func (h *DiscoveryHandler) HandleListV1(w http.ResponseWriter, r *http.Request) {
-	page := positiveInt(r.URL.Query().Get("page"), 1)
-	pageSize := positiveInt(r.URL.Query().Get("page_size"), 30)
-	if pageSize > 50 {
-		pageSize = 50
-	}
-
-	items, total, err := h.store.QueryDiscovery(model.DiscoveryQuery{
-		Page: page, PageSize: pageSize,
-		Since: h.now().UTC().Add(-24 * time.Hour),
-	})
-	if err != nil {
-		log.Printf("[handler] QueryDiscovery: %v", err)
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error", nil)
-		return
-	}
-	meta := &model.Meta{Page: page, PageSize: pageSize, Total: total, GeneratedAt: h.now().UTC().Format(time.RFC3339)}
-	if page*pageSize < total {
-		next := page + 1
-		meta.NextPage = &next
-	}
-	writeJSONWithMeta(w, items, meta)
-}
-
-// HandleDetailV1 GET /api/v1/discovery/{owner}/{repo}。
-func (h *DiscoveryHandler) HandleDetailV1(w http.ResponseWriter, r *http.Request) {
-	owner := r.PathValue("owner")
-	repo := r.PathValue("repo")
-	if owner == "" || repo == "" {
-		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "owner and repo are required", nil)
-		return
-	}
-	item, err := h.store.GetDiscoveryByOwnerRepo(owner, repo)
-	if err != nil {
-		log.Printf("[handler] GetDiscoveryByOwnerRepo: %v", err)
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error", nil)
-		return
-	}
-	if item == nil {
-		writeError(w, http.StatusNotFound, "NOT_FOUND", "Repo not found in AI Discovery", map[string]string{
-			"owner": owner, "repo": repo,
-		})
-		return
-	}
-	writeJSON(w, item)
-}
-
-// HandleAdminSync POST /internal/sync/discovery，实际鉴权由独立 ADMIN_API_KEYS middleware 负责。
+// HandleAdminSync POST /internal/sync/discovery.
 func (h *DiscoveryHandler) HandleAdminSync(w http.ResponseWriter, _ *http.Request) {
 	taskID := "task-" + time.Now().UTC().Format("2006-01-02T15:04:05Z") + "-discovery"
 	go h.sync()
 	writeJSON(w, map[string]string{
-		"task_id": taskID, "started_at": time.Now().UTC().Format(time.RFC3339), "status": "running",
+		"task_id":    taskID,
+		"started_at": time.Now().UTC().Format(time.RFC3339),
+		"status":     "running",
 	})
 }
 

@@ -9,6 +9,22 @@ import (
 
 // Store 数据存储接口，便于 mock 测试和未来切换存储后端
 type Store interface {
+	// --- R-04 聚合主表 ---
+
+	UpsertGitHubRepo(repo model.GitHubRepo) error
+	GetGitHubRepoByOwnerName(owner, name string) (*model.GitHubRepo, error)
+	MarkGitHubRepoUnavailable(owner, name, message string, now time.Time) error
+	AttachWeeklyEvent(repoID int64, project model.Project, issue model.WeeklyIssue) error
+	AttachZreadEvent(repoID int64, event model.ZreadTrending) error
+	AttachDiscoveryEvent(repoID int64, submission model.DiscoverySubmission) error
+	QueryRepos(params model.RepoQuery) ([]model.RepoFeedItem, int, error)
+	GetRepoDetail(repoID int64) (*model.RepoDetail, error)
+	GetAggregatedLanguages() ([]model.LanguageAggregate, error)
+	RebuildAggregates() error
+	GetAllSourceRepos() []string
+
+	// --- 旧内部适配方法：公开旧接口会删除，保留是为了降低测试与辅助代码迁移成本 ---
+
 	// UpsertProject 插入或忽略项目（同一 owner+name 去重）
 	UpsertProject(p *model.Project) error
 

@@ -49,18 +49,34 @@ func NewZreadSpider(s *store.SQLiteStore) *ZreadSpider {
 //
 // 失败行为：返回 error，由调用方（scheduler）决定是否重试。
 func (s *ZreadSpider) RunOnce(ctx context.Context) error {
+	rows, err := s.FetchRows(ctx)
+	if err != nil {
+		return err
+	}
+	if s.store == nil {
+		return nil
+	}
+	for _, row := range rows {
+		if err := s.store.UpsertZreadTrending(row); err != nil {
+			log.Printf("[zread] upsert %s/%s error: %v", row.Owner, row.Name, err)
+		}
+	}
+	return nil
+}
+
+// FetchRows pulls zread and returns normalized rows without writing them.
+// R-04 scheduler uses this method so it can EnsureGitHubRepo first and then
+// attach zread_events by immutable gh_repo_id.
+func (s *ZreadSpider) FetchRows(ctx context.Context) ([]model.ZreadTrending, error) {
 	log.Println("[zread] starting fetch trending...")
 
 	result, err := s.fetchAndParse(ctx)
 	if err != nil {
-		return err
-	}
-
-	if s.store == nil {
-		return nil // for testing
+		return nil, err
 	}
 
 	now := time.Now()
+	rows := make([]model.ZreadTrending, 0)
 	for _, group := range result.Data {
 		// 推断年份（异常告警由 InferYear 内部 log.Warnf 完成）
 		year, err := InferYear(group.TimeSpan.Start, now)
@@ -77,20 +93,20 @@ func (s *ZreadSpider) RunOnce(ctx context.Context) error {
 			topicsStr := string(topics)
 
 			row := model.ZreadTrending{
-				WeekLabel:    group.Title,
-				WeekStart:    weekStart,
-				WeekEnd:      weekEnd,
-				RankInWeek:   i + 1,
-				RepoID:       r.RepoID,
-				Owner:        r.Owner,
-				Name:         r.Name,
-				HTMLURL:      r.URL,
-				Description:  r.Description,
+				WeekLabel:     group.Title,
+				WeekStart:     weekStart,
+				WeekEnd:       weekEnd,
+				RankInWeek:    i + 1,
+				RepoID:        r.RepoID,
+				Owner:         r.Owner,
+				Name:          r.Name,
+				HTMLURL:       r.URL,
+				Description:   r.Description,
 				DescriptionZh: r.DescriptionZh,
-				StarCount:    r.StarCount,
-				Language:     r.Language,
-				Topics:       topicsStr,
-				WikiID:       r.WikiID,
+				StarCount:     r.StarCount,
+				Language:      r.Language,
+				Topics:        topicsStr,
+				WikiID:        r.WikiID,
 				// enricher 14 字段（gh_repo_id / forks / open_issues / watchers / subscribers_count /
 				// pushed_at / updated_at / created_at / license_spdx / default_branch / is_archived / is_fork）
 				// 由 cron 流程后续 enricher.EnrichBatch 补全，spider 只写 zread 拉取原生字段。
@@ -101,14 +117,12 @@ func (s *ZreadSpider) RunOnce(ctx context.Context) error {
 				FetchedAt:         now.UTC().Format(time.RFC3339),
 			}
 
-			if err := s.store.UpsertZreadTrending(row); err != nil {
-				log.Printf("[zread] upsert %s/%s error: %v", r.Owner, r.Name, err)
-			}
+			rows = append(rows, row)
 		}
 	}
 
 	log.Printf("[zread] finished fetch %d groups", len(result.Data))
-	return nil
+	return rows, nil
 }
 
 // fetchAndParse 拉取并解析 zread JSON 端点。

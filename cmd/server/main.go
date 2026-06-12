@@ -112,7 +112,7 @@ func main() {
 
 	// Initialize HTTP handler
 	wh := handler.NewWeeklyHandler(s, sch.Sync, sch.SyncZread)
-	zh := handler.NewZreadTrendingHandler(s)
+	rh := handler.NewReposHandler(s)
 	dh := handler.NewDiscoveryHandler(s, sch.SyncDiscovery)
 
 	// Register routes (Go 1.22+ style)
@@ -125,21 +125,17 @@ func main() {
 	// 在 middleware 后面挂——同时验证服务可达 + Bearer Key 正确。详见 handler/ping.go。
 	mux.Handle("GET /api/v1/ping", authMW.Wrap(handler.HandlePingV1("weekly")))
 
-	// API V1 Endpoints (authenticated)
-	mux.Handle("GET /api/v1/weekly", authMW.Wrap(http.HandlerFunc(wh.HandleProjectsV1)))
-	mux.Handle("GET /api/v1/weekly/{owner}/{repo}", authMW.Wrap(http.HandlerFunc(wh.HandleProjectByOwnerRepoV1)))
-	mux.Handle("GET /api/v1/issues", authMW.Wrap(http.HandlerFunc(wh.HandleIssuesV1)))
-	mux.Handle("GET /api/v1/issues/{number}", authMW.Wrap(http.HandlerFunc(wh.HandleIssueV1)))
-	// v0.5 R-02 新增：zread 周 trending 端点（决策 ② 独立端点，不污染阮一峰现有）
-	mux.Handle("GET /api/v1/zread", authMW.Wrap(http.HandlerFunc(zh.HandleZreadTrendingV1)))
-	mux.Handle("GET /api/v1/discovery", authMW.Wrap(http.HandlerFunc(dh.HandleListV1)))
-	mux.Handle("GET /api/v1/discovery/{owner}/{repo}", authMW.Wrap(http.HandlerFunc(dh.HandleDetailV1)))
+	// API V1 Endpoints (authenticated). R-04 removes old weekly/zread/discovery public routes.
+	mux.Handle("GET /api/v1/repos", authMW.Wrap(http.HandlerFunc(rh.HandleListV1)))
+	mux.Handle("GET /api/v1/repos/languages", authMW.Wrap(http.HandlerFunc(rh.HandleLanguagesV1)))
+	mux.Handle("GET /api/v1/repos/{gh_repo_id}", authMW.Wrap(http.HandlerFunc(rh.HandleDetailV1)))
 
 	// Admin Endpoints (authenticated)
 	mux.Handle("POST /internal/sync/weekly", authMW.Wrap(http.HandlerFunc(wh.HandleAdminSync)))
 	// v0.5 R-02 新增：zread 同步 admin 端点（与阮一峰周刊同步解耦）
 	mux.Handle("POST /internal/sync/zread", authMW.Wrap(http.HandlerFunc(wh.HandleZreadSync)))
 	mux.Handle("POST /internal/sync/discovery", adminAuthMW.Wrap(http.HandlerFunc(dh.HandleAdminSync)))
+	mux.Handle("POST /internal/rebuild-aggregates", adminAuthMW.Wrap(http.HandlerFunc(rh.HandleRebuildAggregates)))
 
 	// Start scheduler (initial sync + cron)
 	go sch.Start()
@@ -159,16 +155,13 @@ func main() {
 	log.Printf("starcat-weekly-api starting on port %s", port)
 	log.Printf("V1 Endpoints (authenticated):")
 	log.Printf("  GET  /api/v1/ping               - Connectivity probe for Starcat client")
-	log.Printf("  GET  /api/v1/weekly             - List projects")
-	log.Printf("  GET  /api/v1/weekly/{o}/{r}     - Get single project")
-	log.Printf("  GET  /api/v1/issues             - List issues")
-	log.Printf("  GET  /api/v1/issues/{n}         - Get issue detail")
-	log.Printf("  GET  /api/v1/zread               - List zread weekly trending (v0.5)")
-	log.Printf("  GET  /api/v1/discovery           - List Show HN AI discoveries")
-	log.Printf("  GET  /api/v1/discovery/{o}/{r}   - Get one AI discovery repo")
+	log.Printf("  GET  /api/v1/repos              - List aggregated repos")
+	log.Printf("  GET  /api/v1/repos/{id}         - Get aggregated repo detail")
+	log.Printf("  GET  /api/v1/repos/languages    - List aggregated languages")
 	log.Printf("  POST /internal/sync/weekly      - Trigger manual sync (阮一峰周刊)")
 	log.Printf("  POST /internal/sync/zread       - Trigger manual sync (zread 周 trending)")
 	log.Printf("  POST /internal/sync/discovery   - Trigger manual sync (ADMIN_API_KEYS)")
+	log.Printf("  POST /internal/rebuild-aggregates - Recompute source aggregates")
 	log.Fatal(http.ListenAndServe(":"+port, mux))
 }
 

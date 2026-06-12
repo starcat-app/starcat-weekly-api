@@ -14,11 +14,8 @@ import (
 
 // Repository 是 Discovery 流水线需要的最小持久化边界（v1.2：仅 enrichment 阶段）。
 type Repository interface {
-	UpsertDiscoverySubmission(model.DiscoverySubmission) error
-	GetDiscoveryEnrichmentCandidates(limit int, now time.Time) ([]model.DiscoveryRepo, error)
-	UpdateDiscoveryEnriched(repo model.DiscoveryRepo, now time.Time) error
-	UpdateDiscoveryEnrichmentFailure(owner, repo, message string, nextRetryAt time.Time) error
-	MarkDiscoveryUnavailable(owner, repo, message string, now time.Time) error
+	UpsertGitHubRepo(model.GitHubRepo) error
+	AttachDiscoveryEvent(repoID int64, submission model.DiscoverySubmission) error
 }
 
 type submissionFetcher interface {
@@ -26,7 +23,7 @@ type submissionFetcher interface {
 }
 
 type repoFetcher interface {
-	Fetch(ctx context.Context, owner, repo string) (model.DiscoveryRepo, error)
+	Fetch(ctx context.Context, owner, repo string) (model.GitHubRepo, error)
 }
 
 // Config 控制 Discovery 每轮工作量与失败退避（v1.2：移除 LLM 分类相关配置）。
@@ -77,45 +74,28 @@ func (s *Service) RunOnce(ctx context.Context) (RunStats, error) {
 		return stats, err
 	}
 	for _, submission := range submissions {
-		if err := s.repository.UpsertDiscoverySubmission(submission); err != nil {
-			return stats, fmt.Errorf("store discovery submission: %w", err)
-		}
-		stats.Submissions++
-	}
-
-	// Phase 2: 补全 GitHub 元数据
-	if err := s.enrich(ctx, now, &stats); err != nil {
-		return stats, err
-	}
-
-	return stats, nil
-}
-
-func (s *Service) enrich(ctx context.Context, now time.Time, stats *RunStats) error {
-	repos, err := s.repository.GetDiscoveryEnrichmentCandidates(s.config.BatchSize, now)
-	if err != nil {
-		return err
-	}
-	for _, candidate := range repos {
-		enriched, err := s.github.Fetch(ctx, candidate.Owner, candidate.Repo)
+		enriched, err := s.github.Fetch(ctx, submission.Owner, submission.Repo)
 		if err != nil {
 			var httpErr *github.HTTPError
 			if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
-				if storeErr := s.repository.MarkDiscoveryUnavailable(candidate.Owner, candidate.Repo, err.Error(), now); storeErr != nil {
-					return storeErr
-				}
-			} else if storeErr := s.repository.UpdateDiscoveryEnrichmentFailure(candidate.Owner, candidate.Repo, err.Error(), now.Add(s.config.RetryDelay)); storeErr != nil {
-				return storeErr
+				log.Printf("[discovery] skip unavailable %s/%s: %v", submission.Owner, submission.Repo, err)
+			} else {
+				log.Printf("[discovery] enrich %s/%s: %v", submission.Owner, submission.Repo, err)
 			}
 			stats.Failures++
-			log.Printf("[discovery] enrich %s/%s: %v", candidate.Owner, candidate.Repo, err)
 			continue
 		}
-		// enrichment 完成即进入 API 可查询状态（v1.2：不再需要分类阶段）
-		if err := s.repository.UpdateDiscoveryEnriched(enriched, now); err != nil {
-			return err
+		enriched.EnrichedAt = &now
+		enriched.FirstEventAt = submission.PublishedAt
+		enriched.LatestEventAt = submission.PublishedAt
+		if err := s.repository.UpsertGitHubRepo(enriched); err != nil {
+			return stats, fmt.Errorf("store discovery repo: %w", err)
 		}
+		if err := s.repository.AttachDiscoveryEvent(enriched.GhRepoID, submission); err != nil {
+			return stats, fmt.Errorf("store discovery submission: %w", err)
+		}
+		stats.Submissions++
 		stats.Enriched++
 	}
-	return nil
+	return stats, nil
 }
