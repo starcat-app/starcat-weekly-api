@@ -377,7 +377,7 @@ func (s *SQLiteStore) QueryRepos(params model.RepoQuery) ([]model.RepoFeedItem, 
 //   - 不接受任何过滤参数（客户端拿到全量后本地做 source/lang/sort 过滤）
 //   - feedItem 仍按 repo 一条条拼（每条 repo 内含 weekly/zread/discovery 三快照 N+1
 //     查询），4000 条 repos × 3 表查询 ≈ 12000 次 SQLite 调用；现网测试 ~50ms 量级
-//     可接受（bulk endpoint 60s 缓存兜底，并发并不会让查询打爆）
+//     可接受（bulk endpoint 6h 缓存兜底，并发并不会让查询打爆）
 func (s *SQLiteStore) QueryAllRepos() ([]model.RepoFeedItem, error) {
 	rows, err := s.db.Query(`SELECT ` + githubRepoColumns() + ` FROM github_repos gr WHERE gr.is_available=1 AND ` + hasAnySourceSQL() + ` ORDER BY gr.latest_event_at DESC, gr.gh_repo_id DESC`)
 	if err != nil {

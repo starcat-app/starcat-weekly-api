@@ -105,7 +105,7 @@ func main() {
 	// Wiki Notifier（增量预热 wiki-api 缓存，通过 WIKI_API_KEY 控制开关）
 	wikiNotifier := notifier.NewWikiNotifier()
 
-	// R-06.3: bulk endpoint 内存缓存（60s TTL + pre-marshaled + pre-gzipped + ETag 304）
+	// R-06.3: bulk endpoint 内存缓存（6h TTL + pre-marshaled + pre-gzipped + ETag 304）
 	// 单例，由 handler.HandleBulkV1 读 + scheduler / RebuildAggregates 写（Invalidate）。
 	bulkCache := handler.NewBulkCache()
 

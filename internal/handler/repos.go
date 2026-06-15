@@ -87,7 +87,7 @@ func (h *ReposHandler) HandleRebuildAggregates(w http.ResponseWriter, _ *http.Re
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error", nil)
 		return
 	}
-	// R-06.3: 聚合表已重算，bulk endpoint 60s 缓存的数据已经过时，立即失效让下次
+	// R-06.3: 聚合表已重算，bulk endpoint 6h 缓存的数据已经过时，立即失效让下次
 	// 请求强制重建。bulkCache 为 nil 时（旧测试路径）短路，不影响正常调用。
 	if h.bulkCache != nil {
 		h.bulkCache.Invalidate()

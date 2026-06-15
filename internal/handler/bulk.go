@@ -18,7 +18,7 @@
 //	}
 //
 // 性能策略:
-//   - 一次性 build payload + 预压缩 gzip，缓存 60s（详见 bulk_cache.go）
+//   - 一次性 build payload + 预压缩 gzip，缓存 6h（详见 bulk_cache.go）
 //   - cache hit + Accept-Encoding: gzip → 直接写 pre-compressed gzip（~16% 原大小）
 //   - cache hit + 客户端带 If-None-Match 等同 ETag → 304 + 无 body（最省带宽）
 //   - cache miss / 过期 → 查 store（QueryAllRepos + GetAggregatedLanguages）+
