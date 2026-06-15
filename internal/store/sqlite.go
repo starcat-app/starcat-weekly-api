@@ -369,6 +369,47 @@ func (s *SQLiteStore) QueryRepos(params model.RepoQuery) ([]model.RepoFeedItem, 
 	return items, total, nil
 }
 
+// QueryAllRepos 返回当前可用的全部 repos（不分页 / 不过滤 / 默认排序）。
+//
+// R-06.3：为 /api/v1/repos/bulk 提供"全量一次性出"的查询路径。约束:
+//   - 只取 is_available=1 + 至少一个源（weekly / zread / discovery）的 repo
+//   - ORDER BY latest_event_at DESC, gh_repo_id DESC（与 QueryRepos 默认一致）
+//   - 不接受任何过滤参数（客户端拿到全量后本地做 source/lang/sort 过滤）
+//   - feedItem 仍按 repo 一条条拼（每条 repo 内含 weekly/zread/discovery 三快照 N+1
+//     查询），4000 条 repos × 3 表查询 ≈ 12000 次 SQLite 调用；现网测试 ~50ms 量级
+//     可接受（bulk endpoint 60s 缓存兜底，并发并不会让查询打爆）
+func (s *SQLiteStore) QueryAllRepos() ([]model.RepoFeedItem, error) {
+	rows, err := s.db.Query(`SELECT ` + githubRepoColumns() + ` FROM github_repos gr WHERE gr.is_available=1 AND ` + hasAnySourceSQL() + ` ORDER BY gr.latest_event_at DESC, gr.gh_repo_id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	repos := make([]model.GitHubRepo, 0)
+	for rows.Next() {
+		repo, err := scanGitHubRepo(rows)
+		if err != nil {
+			return nil, err
+		}
+		repos = append(repos, *repo)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+
+	items := make([]model.RepoFeedItem, 0, len(repos))
+	for i := range repos {
+		repo := repos[i]
+		item, err := s.feedItem(&repo)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
 func (s *SQLiteStore) GetRepoDetail(repoID int64) (*model.RepoDetail, error) {
 	row := s.db.QueryRow(`SELECT `+githubRepoColumns()+` FROM github_repos gr WHERE gr.gh_repo_id=? AND `+hasAnySourceSQL(), repoID)
 	repo, err := scanGitHubRepo(row)

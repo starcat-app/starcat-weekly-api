@@ -18,6 +18,12 @@ type Store interface {
 	AttachZreadEvent(repoID int64, event model.ZreadTrending) error
 	AttachDiscoveryEvent(repoID int64, submission model.DiscoverySubmission) error
 	QueryRepos(params model.RepoQuery) ([]model.RepoFeedItem, int, error)
+	// QueryAllRepos 返回当前可用的**全部** repos（不分页、不过滤 source/lang/sort）。
+	//
+	// 仅供 R-06.3 `/api/v1/repos/bulk` endpoint 使用：客户端 weekly 视图一次性
+	// 拉全量 ~4000 条到本地做排序 / 过滤 / 分页（减少分页请求次数 + 离线可用）。
+	// 默认按 latest_event_at DESC 排序，保持与 QueryRepos 默认排序一致。
+	QueryAllRepos() ([]model.RepoFeedItem, error)
 	GetRepoDetail(repoID int64) (*model.RepoDetail, error)
 	GetAggregatedLanguages() ([]model.LanguageAggregate, error)
 	RebuildAggregates() error

@@ -12,11 +12,20 @@ import (
 )
 
 type ReposHandler struct {
-	store store.Store
+	store     store.Store
+	bulkCache *BulkCache // R-06.3: RebuildAggregates 跑完后主动失效；可为 nil（旧测试路径）
 }
 
 func NewReposHandler(s store.Store) *ReposHandler {
 	return &ReposHandler{store: s}
+}
+
+// NewReposHandlerWithBulkCache 注入 bulk cache 用于 RebuildAggregates 后主动失效。
+//
+// R-06.3 后所有生产 callsite 都应该走这个构造函数；保留 NewReposHandler 仅供
+// 既有 handler test 复用（cache 为 nil 时 Invalidate 调用走 nil-safe 短路）。
+func NewReposHandlerWithBulkCache(s store.Store, bulkCache *BulkCache) *ReposHandler {
+	return &ReposHandler{store: s, bulkCache: bulkCache}
 }
 
 func (h *ReposHandler) HandleListV1(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +86,11 @@ func (h *ReposHandler) HandleRebuildAggregates(w http.ResponseWriter, _ *http.Re
 		log.Printf("[handler] RebuildAggregates: %v", err)
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error", nil)
 		return
+	}
+	// R-06.3: 聚合表已重算，bulk endpoint 60s 缓存的数据已经过时，立即失效让下次
+	// 请求强制重建。bulkCache 为 nil 时（旧测试路径）短路，不影响正常调用。
+	if h.bulkCache != nil {
+		h.bulkCache.Invalidate()
 	}
 	writeJSON(w, map[string]string{
 		"status":       "ok",
