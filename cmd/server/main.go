@@ -105,14 +105,20 @@ func main() {
 	// Wiki Notifier（增量预热 wiki-api 缓存，通过 WIKI_API_KEY 控制开关）
 	wikiNotifier := notifier.NewWikiNotifier()
 
-	// Initialize scheduler
+	// R-06.3: bulk endpoint 内存缓存（6h TTL + pre-marshaled + pre-gzipped + ETag 304）
+	// 单例，由 handler.HandleBulkV1 读 + scheduler / RebuildAggregates 写（Invalidate）。
+	bulkCache := handler.NewBulkCache()
+
+	// Initialize scheduler — bulkCache 注入作为 BulkCacheInvalidator，scheduler 跑完
+	// weekly / zread / discovery 同步后主动失效 bulk cache。
 	sch := scheduler.New(s, enr, wikiNotifier, repoDir, discoveryService,
 		envOrDefault("DISCOVERY_CRON", "17 * * * *"),
-		envOrDefault("ZREAD_TRENDING_CRON", "0 6 * * *"))
+		envOrDefault("ZREAD_TRENDING_CRON", "0 6 * * *"),
+		bulkCache)
 
 	// Initialize HTTP handler
 	wh := handler.NewWeeklyHandler(s, sch.Sync, sch.SyncZread)
-	rh := handler.NewReposHandler(s)
+	rh := handler.NewReposHandlerWithBulkCache(s, bulkCache)
 	dh := handler.NewDiscoveryHandler(s, sch.SyncDiscovery)
 
 	// Register routes (Go 1.22+ style)
@@ -127,6 +133,10 @@ func main() {
 
 	// API V1 Endpoints (authenticated). R-04 removes old weekly/zread/discovery public routes.
 	mux.Handle("GET /api/v1/repos", authMW.Wrap(http.HandlerFunc(rh.HandleListV1)))
+	// R-06.3 (2026-06-15): bulk endpoint 让客户端一次性拉全量 ~4000 条 repos +
+	// languages 聚合到本地做 sort/filter/page，避免分页 80+ 次往返。详见 handler/bulk.go。
+	// 必须挂在 /api/v1/repos/{gh_repo_id} 之前否则被通配吃掉。
+	mux.Handle("GET /api/v1/repos/bulk", authMW.Wrap(handler.HandleBulkV1(s, bulkCache)))
 	mux.Handle("GET /api/v1/repos/languages", authMW.Wrap(http.HandlerFunc(rh.HandleLanguagesV1)))
 	mux.Handle("GET /api/v1/repos/{gh_repo_id}", authMW.Wrap(http.HandlerFunc(rh.HandleDetailV1)))
 
@@ -155,7 +165,8 @@ func main() {
 	log.Printf("starcat-weekly-api starting on port %s", port)
 	log.Printf("V1 Endpoints (authenticated):")
 	log.Printf("  GET  /api/v1/ping               - Connectivity probe for Starcat client")
-	log.Printf("  GET  /api/v1/repos              - List aggregated repos")
+	log.Printf("  GET  /api/v1/repos              - List aggregated repos (paginated)")
+	log.Printf("  GET  /api/v1/repos/bulk         - One-shot full payload (repos + languages, gzip + ETag 304)")
 	log.Printf("  GET  /api/v1/repos/{id}         - Get aggregated repo detail")
 	log.Printf("  GET  /api/v1/repos/languages    - List aggregated languages")
 	log.Printf("  POST /internal/sync/weekly      - Trigger manual sync (阮一峰周刊)")

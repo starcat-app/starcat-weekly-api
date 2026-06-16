@@ -369,6 +369,47 @@ func (s *SQLiteStore) QueryRepos(params model.RepoQuery) ([]model.RepoFeedItem, 
 	return items, total, nil
 }
 
+// QueryAllRepos 返回当前可用的全部 repos（不分页 / 不过滤 / 默认排序）。
+//
+// R-06.3：为 /api/v1/repos/bulk 提供"全量一次性出"的查询路径。约束:
+//   - 只取 is_available=1 + 至少一个源（weekly / zread / discovery）的 repo
+//   - ORDER BY latest_event_at DESC, gh_repo_id DESC（与 QueryRepos 默认一致）
+//   - 不接受任何过滤参数（客户端拿到全量后本地做 source/lang/sort 过滤）
+//   - feedItem 仍按 repo 一条条拼（每条 repo 内含 weekly/zread/discovery 三快照 N+1
+//     查询），4000 条 repos × 3 表查询 ≈ 12000 次 SQLite 调用；现网测试 ~50ms 量级
+//     可接受（bulk endpoint 6h 缓存兜底，并发并不会让查询打爆）
+func (s *SQLiteStore) QueryAllRepos() ([]model.RepoFeedItem, error) {
+	rows, err := s.db.Query(`SELECT ` + githubRepoColumns() + ` FROM github_repos gr WHERE gr.is_available=1 AND ` + hasAnySourceSQL() + ` ORDER BY gr.latest_event_at DESC, gr.gh_repo_id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	repos := make([]model.GitHubRepo, 0)
+	for rows.Next() {
+		repo, err := scanGitHubRepo(rows)
+		if err != nil {
+			return nil, err
+		}
+		repos = append(repos, *repo)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+
+	items := make([]model.RepoFeedItem, 0, len(repos))
+	for i := range repos {
+		repo := repos[i]
+		item, err := s.feedItem(&repo)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
 func (s *SQLiteStore) GetRepoDetail(repoID int64) (*model.RepoDetail, error) {
 	row := s.db.QueryRow(`SELECT `+githubRepoColumns()+` FROM github_repos gr WHERE gr.gh_repo_id=? AND `+hasAnySourceSQL(), repoID)
 	repo, err := scanGitHubRepo(row)
@@ -389,6 +430,19 @@ func (s *SQLiteStore) GetRepoDetail(repoID int64) (*model.RepoDetail, error) {
 	return &model.RepoDetail{Repo: item, Events: events}, nil
 }
 
+// GetAggregatedLanguages 聚合 weekly 三源 repo 的语言列表,供客户端 picker / sidebar 使用。
+//
+// 排序约定（dong4j 2026-06-16 调整 — 与 trending 后端同款）:
+//
+//	1. **未分类（__uncategorized__）排在第 1 位**;
+//	2. 其它语言按 count DESC;
+//	3. count 相同时按 key ASC（保证响应稳定）。
+//
+// 客户端会在前面 prepend `""` 哨兵作为「全部」选项,所以最终 picker 顺序是:
+// 全部 → 未分类 → count 最多的语言 → ... → count 最少且 key 字典序最大的语言。
+//
+// 历史:之前是「未分类排最后」(`ORDER BY key=? ASC` 把 1 放后面),dong4j 反馈这种放法
+// 用户找「未分类」要滚到底太吃力,改成放在前列让用户一眼能看到这个特殊选项。
 func (s *SQLiteStore) GetAggregatedLanguages() ([]model.LanguageAggregate, error) {
 	rows, err := s.db.Query(`
 		SELECT
@@ -397,7 +451,7 @@ func (s *SQLiteStore) GetAggregatedLanguages() ([]model.LanguageAggregate, error
 		FROM github_repos gr
 		WHERE is_available=1 AND `+hasAnySourceSQL()+`
 		GROUP BY key
-		ORDER BY key=? ASC, count DESC, key ASC
+		ORDER BY (key=?) DESC, count DESC, key ASC
 	`, model.UncategorizedLanguageKey, model.UncategorizedLanguageKey)
 	if err != nil {
 		return nil, err
