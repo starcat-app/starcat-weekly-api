@@ -430,6 +430,19 @@ func (s *SQLiteStore) GetRepoDetail(repoID int64) (*model.RepoDetail, error) {
 	return &model.RepoDetail{Repo: item, Events: events}, nil
 }
 
+// GetAggregatedLanguages 聚合 weekly 三源 repo 的语言列表,供客户端 picker / sidebar 使用。
+//
+// 排序约定（dong4j 2026-06-16 调整 — 与 trending 后端同款）:
+//
+//	1. **未分类（__uncategorized__）排在第 1 位**;
+//	2. 其它语言按 count DESC;
+//	3. count 相同时按 key ASC（保证响应稳定）。
+//
+// 客户端会在前面 prepend `""` 哨兵作为「全部」选项,所以最终 picker 顺序是:
+// 全部 → 未分类 → count 最多的语言 → ... → count 最少且 key 字典序最大的语言。
+//
+// 历史:之前是「未分类排最后」(`ORDER BY key=? ASC` 把 1 放后面),dong4j 反馈这种放法
+// 用户找「未分类」要滚到底太吃力,改成放在前列让用户一眼能看到这个特殊选项。
 func (s *SQLiteStore) GetAggregatedLanguages() ([]model.LanguageAggregate, error) {
 	rows, err := s.db.Query(`
 		SELECT
@@ -438,7 +451,7 @@ func (s *SQLiteStore) GetAggregatedLanguages() ([]model.LanguageAggregate, error
 		FROM github_repos gr
 		WHERE is_available=1 AND `+hasAnySourceSQL()+`
 		GROUP BY key
-		ORDER BY key=? ASC, count DESC, key ASC
+		ORDER BY (key=?) DESC, count DESC, key ASC
 	`, model.UncategorizedLanguageKey, model.UncategorizedLanguageKey)
 	if err != nil {
 		return nil, err
