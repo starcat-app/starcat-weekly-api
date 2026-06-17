@@ -2,8 +2,6 @@
 # Dependabot 配置
 # 自动检查并提交依赖更新 PR
 # https://docs.github.com/en/code-security/dependabot
-#
-# 与 starcat-sharing-api / starcat-trending-api 保持一致的配置
 # ===========================================
 version: 2
 
