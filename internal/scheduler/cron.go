@@ -83,11 +83,13 @@ func New(s store.Store, enr *enricher.Enricher, wn *notifier.WikiNotifier, repoD
 	}
 }
 
-// Start 启动定时器 + 首次全量同步
+// Start 注册 cron 并并行触发三源首次同步。
+//
+// 关键约束（2026-06-18）：weekly 冷启动可能耗时数小时（GitHub enrich + rate limit），
+// 绝不能阻塞 zread / discovery cron 注册与冷启动 goroutine——否则 redeploy 后 HN feed
+// 长时间为空。三源共用 github.Client 限流器，并行后仍会抢配额，但至少能立即开跑。
 func (s *Scheduler) Start() {
-	log.Println("[scheduler] 首次全量同步...")
-	repos := s.sync()
-	s.wikiNotifier.NotifyRepos(repos)
+	log.Println("[scheduler] 注册 cron 并并行启动首次同步（weekly / zread / discovery）...")
 
 	// R-04: weekly 历史数据不需要小时级刷新。默认每周一 00:00 UTC 更新一次。
 	_, err := s.cron.AddFunc("0 0 * * 1", func() {
@@ -111,11 +113,20 @@ func (s *Scheduler) Start() {
 		if err != nil {
 			log.Printf("[scheduler] cron add (discovery): %v", err)
 		}
-		go s.runDiscovery()
 	}
 
 	s.cron.Start()
 	log.Printf("[scheduler] cron 已启动 (weekly Mon 00:00 UTC + zread %s + discovery %s)", s.zreadCron, s.discoveryCron)
+
+	go func() {
+		log.Println("[scheduler] 首次 weekly 同步...")
+		repos := s.sync()
+		s.wikiNotifier.NotifyRepos(repos)
+	}()
+	go s.runZreadFetch()
+	if s.discovery != nil {
+		go s.runDiscovery()
+	}
 }
 
 // Stop 停止调度器
@@ -237,12 +248,13 @@ func (s *Scheduler) sync() []string {
 	log.Printf("[scheduler] 获取到 %d 期周刊", len(issues))
 
 	newCount := 0
+	skipped := 0
 	var allRepos []string
 
 	for i, issue := range issues {
 		existing, _ := s.store.GetIssue(issue.Number)
-		if existing != nil && i < len(issues)-10 {
-			// 最近 10 期可能更新内容，其余跳过
+		if !shouldSyncWeeklyIssue(existing, issue.Path) {
+			skipped++
 			continue
 		}
 
@@ -289,7 +301,7 @@ func (s *Scheduler) sync() []string {
 		}
 	}
 
-	log.Printf("[scheduler] 同步完成: %d 期新/更新, %d 个 repo", newCount, len(allRepos))
+	log.Printf("[scheduler] 同步完成: %d 期新/更新, %d 个 repo, %d 期跳过(无变更)", newCount, len(allRepos), skipped)
 
 	// R-06.3: weekly sync 写入 weekly_extras + github_repos 后，bulk endpoint
 	// 内存缓存的数据已过时；不论本次是否实际新增 repos 都失效（让"刷新但无新数据"
@@ -297,6 +309,23 @@ func (s *Scheduler) sync() []string {
 	s.bulkCache.Invalidate()
 
 	return allRepos
+}
+
+// shouldSyncWeeklyIssue 判断某期周刊是否要在本轮 sync 中 parse + enrich。
+//
+// redeploy 不得无条件重跑「最近 N 期」——会打满 GitHub 配额并拖住其它数据源。
+// 仅在这些情况重跑：① DB 无该期记录（新刊 / 空库）；② 本地 md 自上次 ParsedAt 后有改动
+//（git pull 更新了文件 mtime）。
+func shouldSyncWeeklyIssue(existing *model.WeeklyIssue, issuePath string) bool {
+	if existing == nil {
+		return true
+	}
+	info, err := os.Stat(issuePath)
+	if err != nil {
+		// stat 失败时保守重跑，避免漏掉新内容。
+		return true
+	}
+	return info.ModTime().UTC().After(existing.ParsedAt.UTC())
 }
 
 func issuePublishedAt(path string) time.Time {
