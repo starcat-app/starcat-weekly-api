@@ -161,8 +161,6 @@ GET /api/v1/zread?week=this|last|YYYY-MM-DD&limit=20
 }
 ```
 
-完整字段定义见 `docs/详细设计/19-wiki集成.md` §8.3 / §8.4。
-
 ### AI Discovery 列表（v0.6 新增）
 
 ```http

@@ -65,8 +65,7 @@
 ### Notes
 - **不影响** 现有 `/api/v1/projects` / `/api/v1/issues` / `/api/v1/issues/{number}` 端点
   （决策 ② 严格遵守 — 行为 100% 兼容）
-- 客户端 WeeklyView source picker 与 merged 视图将在**独立 PR** 处理（参考
-  `docs/详细设计/19-wiki集成.md` §8.5 与 §8.8.3 #40-50）
+- 客户端 WeeklyView source picker 与 merged 视图将在**独立 PR** 处理
 
 ## [1.0.0] - 2026-06-08 (R-01 v1.2 完成)
 
