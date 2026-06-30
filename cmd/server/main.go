@@ -173,7 +173,8 @@ func main() {
 	log.Printf("  POST /internal/sync/zread       - Trigger manual sync (zread 周 trending)")
 	log.Printf("  POST /internal/sync/discovery   - Trigger manual sync (ADMIN_API_KEYS)")
 	log.Printf("  POST /internal/rebuild-aggregates - Recompute source aggregates")
-	log.Fatal(http.ListenAndServe(":"+port, mux))
+	handler := middleware.CORS(mux)
+	log.Fatal(http.ListenAndServe(":"+port, handler))
 }
 
 func envOrDefault(key, fallback string) string {
