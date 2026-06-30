@@ -127,7 +127,7 @@ func (c *Client) getRepoOnce(ctx context.Context, owner, repo string) (*RepoResp
 			log.Printf("[github] no tokens, sleeping %v until %s", d.Round(time.Second), resetAt.Format(time.RFC3339))
 			time.Sleep(d)
 		}
-		return nil, fmt.Errorf("no available GitHub token")
+		return nil, ErrRateLimited
 	}
 
 	if c.limiter != nil {
@@ -182,11 +182,35 @@ func (c *Client) getRepoOnce(ctx context.Context, owner, repo string) (*RepoResp
 // GetReadme 调 GET /repos/{owner}/{repo}/readme，返回 base64 解码后的内容。
 //
 // README 404 返回空字符串 + ErrRepoNotFound（调用方可自行决定是否视为"无 README"）。
-// 429/403 内部已调用 Pause 并返回 ErrRateLimited。
+// 429/403 内部已临时禁用当前 token 并返回 ErrRateLimited。
 func (c *Client) GetReadme(ctx context.Context, owner, repo string) (string, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		content, err := c.getReadmeOnce(ctx, owner, repo)
+		if err == nil {
+			return content, nil
+		}
+		if errors.Is(err, ErrRateLimited) {
+			continue
+		}
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) && (httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode >= 500) {
+			continue
+		}
+		return "", err
+	}
+	return "", fmt.Errorf("GetReadme %s/%s failed after 3 attempts", owner, repo)
+}
+
+func (c *Client) getReadmeOnce(ctx context.Context, owner, repo string) (string, error) {
 	token := c.pool.PickBest()
 	if token == nil {
-		return "", fmt.Errorf("no available GitHub token")
+		resetAt := c.pool.EarliestReset()
+		if !resetAt.IsZero() && resetAt.After(time.Now()) {
+			d := time.Until(resetAt)
+			log.Printf("[github] no tokens, sleeping %v until %s", d.Round(time.Second), resetAt.Format(time.RFC3339))
+			time.Sleep(d)
+		}
+		return "", ErrRateLimited
 	}
 
 	if c.limiter != nil {
@@ -217,6 +241,10 @@ func (c *Client) GetReadme(ctx context.Context, owner, repo string) (string, err
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
 		c.handleRateLimit(resp, token)
 		return "", ErrRateLimited
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", &HTTPError{StatusCode: resp.StatusCode, Message: "unauthorized"}
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -251,7 +279,9 @@ func (c *Client) GetReadme(ctx context.Context, owner, repo string) (string, err
 	return string(decoded), nil
 }
 
-// handleRateLimit 从响应头提取 Retry-After + token reset，调 Pause 挂起后续请求。
+// handleRateLimit 从响应头提取 Retry-After + token reset，只临时禁用当前 token。
+// 多 token 场景下，其他 token 仍应继续服务后续请求；全部不可用时由 PickBest
+// 返回 nil，并在调用路径里等到 EarliestReset。
 func (c *Client) handleRateLimit(resp *http.Response, token *tokenpool.TokenState) {
 	pauseUntil := token.ResetAt
 	if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
@@ -265,10 +295,8 @@ func (c *Client) handleRateLimit(resp *http.Response, token *tokenpool.TokenStat
 	if pauseUntil.Before(time.Now().Add(60 * time.Second)) {
 		pauseUntil = time.Now().Add(60 * time.Second)
 	}
-	log.Printf("[github] rate limited (%d), pausing until %s", resp.StatusCode, pauseUntil.Format(time.RFC3339))
-	if c.limiter != nil {
-		c.limiter.Pause(pauseUntil)
-	}
+	log.Printf("[github] rate limited (%d), disabling token until %s", resp.StatusCode, pauseUntil.Format(time.RFC3339))
+	c.pool.DisableUntil(token, pauseUntil, fmt.Sprintf("rate limited status %d", resp.StatusCode))
 }
 
 // HTTPError 非 200/404/429 的 GitHub HTTP 错误，保留状态码供调用方分支判断。
