@@ -111,7 +111,7 @@ func parseRepoQuery(w http.ResponseWriter, r *http.Request) (model.RepoQuery, bo
 		sortKey = "latest_event_at"
 	}
 	switch sortKey {
-	case "latest_event_at", "stars", "pushed_at":
+	case "latest_event_at", "stars", "updated_at", "created_at", "name":
 	default:
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid sort", map[string]string{"sort": sortKey})
 		return model.RepoQuery{}, false

@@ -434,9 +434,9 @@ func (s *SQLiteStore) GetRepoDetail(repoID int64) (*model.RepoDetail, error) {
 //
 // 排序约定（dong4j 2026-06-16 调整 — 与 trending 后端同款）:
 //
-//	1. **未分类（__uncategorized__）排在第 1 位**;
-//	2. 其它语言按 count DESC;
-//	3. count 相同时按 key ASC（保证响应稳定）。
+//  1. **未分类（__uncategorized__）排在第 1 位**;
+//  2. 其它语言按 count DESC;
+//  3. count 相同时按 key ASC（保证响应稳定）。
 //
 // 客户端会在前面 prepend `""` 哨兵作为「全部」选项,所以最终 picker 顺序是:
 // 全部 → 未分类 → count 最多的语言 → ... → count 最少且 key 字典序最大的语言。
@@ -938,8 +938,12 @@ func repoOrderBy(sortKey, order string) string {
 	switch sortKey {
 	case "stars":
 		return "ORDER BY gr.stars " + dir + ", gr.gh_repo_id DESC"
-	case "pushed_at":
-		return "ORDER BY gr.pushed_at " + dir + ", gr.gh_repo_id DESC"
+	case "updated_at":
+		return "ORDER BY gr.updated_at " + dir + ", gr.gh_repo_id DESC"
+	case "created_at":
+		return "ORDER BY gr.created_at " + dir + ", gr.gh_repo_id DESC"
+	case "name":
+		return "ORDER BY LOWER(gr.full_name) " + dir + ", gr.gh_repo_id DESC"
 	default:
 		return "ORDER BY gr.latest_event_at " + dir + ", gr.gh_repo_id DESC"
 	}
