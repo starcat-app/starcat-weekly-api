@@ -108,9 +108,12 @@ func main() {
 	discoveryCollector := discovery.NewCollector(hnClient, ingestService, envInt("DISCOVERY_HN_LIMIT", 30))
 	helloGitHubCollector := weeklysource.NewHelloGitHubCollector(
 		weeklysource.NewHelloGitHubClient(nil), ingestService, envInt("HELLOGITHUB_FEATURED_MAX_PAGES", 3))
+	helloGitHubBackfill := weeklysource.NewHelloGitHubBackfillManager(
+		s, weeklysource.NewHelloGitHubClient(nil), ingestService)
 	workerContext, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
 	go ingestWorker.Run(workerContext)
+	go helloGitHubBackfill.Run(workerContext)
 
 	// Collector 只入队；Worker 在批次终态统一失效 bulk cache。
 	sch := scheduler.New(s, ingestService, wikiNotifier, repoDir, discoveryCollector, helloGitHubCollector,
@@ -122,7 +125,7 @@ func main() {
 	wh := handler.NewWeeklyHandler(s, sch.Sync, sch.SyncZread)
 	rh := handler.NewReposHandlerWithBulkCache(s, bulkCache)
 	dh := handler.NewDiscoveryHandler(s, sch.SyncDiscovery)
-	hgh := handler.NewHelloGitHubHandler(sch.SyncHelloGitHub)
+	hgh := handler.NewHelloGitHubHandler(sch.SyncHelloGitHub, helloGitHubBackfill)
 	ih := handler.NewImportsHandler(ingestService, s)
 	ph := handler.NewPinsHandler(s, bulkCache)
 
@@ -150,7 +153,7 @@ func main() {
 	// v0.5 R-02 新增：zread 同步 admin 端点（与阮一峰周刊同步解耦）
 	mux.Handle("POST /internal/sync/zread", adminAuthMW.Wrap(http.HandlerFunc(wh.HandleZreadSync)))
 	mux.Handle("POST /internal/sync/discovery", adminAuthMW.Wrap(http.HandlerFunc(dh.HandleAdminSync)))
-	mux.Handle("POST /internal/sync/hellogithub", adminAuthMW.Wrap(http.HandlerFunc(hgh.HandleAdminSync)))
+	mux.Handle("POST /internal/sources/{source_code}/sync", adminAuthMW.Wrap(http.HandlerFunc(hgh.HandleSourceSync)))
 	mux.Handle("POST /internal/rebuild-aggregates", adminAuthMW.Wrap(http.HandlerFunc(rh.HandleRebuildAggregates)))
 	mux.Handle("GET /internal/sources", adminAuthMW.Wrap(http.HandlerFunc(ih.HandleSources)))
 	mux.Handle("POST /internal/imports", adminAuthMW.Wrap(http.HandlerFunc(ih.HandleCreate)))
@@ -186,7 +189,7 @@ func main() {
 	log.Printf("  POST /internal/sync/weekly      - Trigger manual sync (阮一峰周刊)")
 	log.Printf("  POST /internal/sync/zread       - Trigger manual sync (zread 周 trending)")
 	log.Printf("  POST /internal/sync/discovery   - Trigger manual sync (ADMIN_API_KEYS)")
-	log.Printf("  POST /internal/sync/hellogithub - Trigger HelloGitHub featured sync")
+	log.Printf("  POST /internal/sources/{code}/sync - Trigger HelloGitHub incremental/backfill sync")
 	log.Printf("  POST /internal/rebuild-aggregates - Recompute source aggregates")
 	log.Printf("  GET  /internal/sources           - List fixed sources and ingest status")
 	log.Printf("  POST /internal/imports           - Enqueue a manual repository batch")
