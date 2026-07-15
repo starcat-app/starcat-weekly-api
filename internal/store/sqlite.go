@@ -253,7 +253,7 @@ func (s *SQLiteStore) AttachZreadEvent(repoID int64, event model.ZreadTrending) 
 
 func (s *SQLiteStore) AttachDiscoveryEvent(repoID int64, sub model.DiscoverySubmission) error {
 	return s.UpsertSourceEvent(repoID, model.SourceEventInput{
-		SourceCode: model.SourceDiscovery, ExternalKey: fmt.Sprintf("hn:%d", sub.HNID),
+		SourceCode: model.SourceDiscovery, ExternalKey: fmt.Sprintf("hn:%d:%s/%s", sub.HNID, strings.ToLower(sub.Owner), strings.ToLower(sub.Repo)),
 		OccurredAt: sub.PublishedAt, SourceURL: sub.HNURL, Title: sub.Title,
 		Payload: map[string]any{
 			"hn_id": sub.HNID, "score": sub.Score, "comments": sub.Comments,
@@ -728,23 +728,6 @@ func (s *SQLiteStore) GetUnenrichedZreadRepos(int) ([]model.ZreadTrending, error
 }
 func (s *SQLiteStore) UpdateZreadEnriched(string, string, string, *model.ZreadTrending) error {
 	return nil
-}
-
-// Deprecated discovery compatibility methods.
-func (s *SQLiteStore) UpsertDiscoverySubmission(sub model.DiscoverySubmission) error { return nil }
-func (s *SQLiteStore) GetDiscoveryEnrichmentCandidates(int, time.Time) ([]model.DiscoveryRepo, error) {
-	return nil, nil
-}
-func (s *SQLiteStore) UpdateDiscoveryEnriched(model.DiscoveryRepo, time.Time) error { return nil }
-func (s *SQLiteStore) UpdateDiscoveryEnrichmentFailure(string, string, string, time.Time) error {
-	return nil
-}
-func (s *SQLiteStore) MarkDiscoveryUnavailable(string, string, string, time.Time) error { return nil }
-func (s *SQLiteStore) QueryDiscovery(model.DiscoveryQuery) ([]model.DiscoveryItemDTO, int, error) {
-	return nil, 0, nil
-}
-func (s *SQLiteStore) GetDiscoveryByOwnerRepo(string, string) (*model.DiscoveryItemDTO, error) {
-	return nil, nil
 }
 
 // ---- Query helpers ----

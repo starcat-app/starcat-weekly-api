@@ -82,16 +82,22 @@ func (s *Service) Enqueue(request model.EnqueueBatchRequest) (model.IngestBatchA
 			return model.IngestBatchAcceptance{}, validationErrorf("invalid repository at index %d: %s/%s", index, candidate.Owner, candidate.Repo)
 		}
 		normalized := strings.ToLower(candidate.Owner + "/" + candidate.Repo)
-		if _, exists := seen[normalized]; exists {
-			continue
-		}
-		seen[normalized] = struct{}{}
 		if candidate.OccurredAt.IsZero() {
 			candidate.OccurredAt = now
 		}
 		if strings.TrimSpace(candidate.ExternalKey) == "" {
 			candidate.ExternalKey = fmt.Sprintf("%s:%s", request.IdempotencyKey, normalized)
 		}
+		// 人工情报按 repo 去重；Collector/Backfill 允许同一 repo 在同批拥有多个
+		// 不同 external event（例如同仓库多次 Show HN 投稿）。
+		deduplicationKey := normalized
+		if request.Kind != model.IngestKindManualImport {
+			deduplicationKey += "\x00" + candidate.ExternalKey
+		}
+		if _, exists := seen[deduplicationKey]; exists {
+			continue
+		}
+		seen[deduplicationKey] = struct{}{}
 		deduplicated = append(deduplicated, candidate)
 	}
 	duplicateCount := len(request.Candidates) - len(deduplicated)

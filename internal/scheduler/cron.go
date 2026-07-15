@@ -3,17 +3,18 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
 
 	"github.com/dong4j/starcat-weekly-api/internal/discovery"
-	"github.com/dong4j/starcat-weekly-api/internal/enricher"
 	"github.com/dong4j/starcat-weekly-api/internal/fetcher"
 	"github.com/dong4j/starcat-weekly-api/internal/model"
 	"github.com/dong4j/starcat-weekly-api/internal/notifier"
@@ -22,30 +23,12 @@ import (
 	"github.com/dong4j/starcat-weekly-api/internal/store"
 )
 
-// BulkCacheInvalidator 是 scheduler 完成 weekly / zread / discovery 同步后需要
-// "主动失效 bulk endpoint 内存缓存"的最小接口。
-//
-// 让 scheduler 包**不直接 import handler 包**：handler/bulk_cache.go 的
-// `*BulkCache` 自动满足这个接口；main.go 把实例注入到 scheduler.New(...) 即可。
-//
-// 这是 R-06.3（2026-06-15）拆出的接口，目的是避免 scheduler ↔ handler 双向
-// import 循环。
-type BulkCacheInvalidator interface {
-	Invalidate()
-}
-
-// noopBulkCacheInvalidator 是 nil-safe 占位，仅用于测试 / 调用方暂时不接缓存的场景。
-type noopBulkCacheInvalidator struct{}
-
-func (noopBulkCacheInvalidator) Invalidate() {}
-
 // Scheduler 同步调度器
 type Scheduler struct {
 	store         store.Store
-	enricher      *enricher.Enricher
+	enqueuer      ingestEnqueuer
 	wikiNotifier  *notifier.WikiNotifier
-	bulkCache     BulkCacheInvalidator // R-06.3: 完成同步后主动失效 bulk cache；nil 时用 noop
-	discovery     *discovery.Service
+	discovery     discoveryRunner
 	discoveryCron string
 	zreadCron     string
 	repoDir       string
@@ -54,26 +37,28 @@ type Scheduler struct {
 	running       map[string]bool // 防止并发跑同一任务（funcName 锁）
 }
 
+type ingestEnqueuer interface {
+	Enqueue(model.EnqueueBatchRequest) (model.IngestBatchAcceptance, error)
+}
+
+type discoveryRunner interface {
+	RunOnce(context.Context) (discovery.RunStats, error)
+}
+
 // New 创建调度器。
 //
-// bulkCache 是 R-06.3 加的可选依赖：完成 sync / runZreadFetch / runDiscovery 后
-// 主动失效 bulk endpoint 内存缓存，让客户端下次请求拿到聚合更新后的数据。
-// 传 nil 时退化到 noop（不报错，仅不做缓存失效），方便测试 / 暂未接缓存的部署场景。
-func New(s store.Store, enr *enricher.Enricher, wn *notifier.WikiNotifier, repoDir string, discoveryService *discovery.Service, discoveryCron string, zreadCron string, bulkCache BulkCacheInvalidator) *Scheduler {
+// GitHub enrich 完成后的 bulk cache 失效由统一 Worker 负责；Collector 入队时不能提前失效。
+func New(s store.Store, enqueuer ingestEnqueuer, wn *notifier.WikiNotifier, repoDir string, discoveryService discoveryRunner, discoveryCron string, zreadCron string) *Scheduler {
 	if discoveryCron == "" {
 		discoveryCron = "17 * * * *"
 	}
 	if zreadCron == "" {
 		zreadCron = "0 6 * * *" // 默认每天 06:00 UTC
 	}
-	if bulkCache == nil {
-		bulkCache = noopBulkCacheInvalidator{}
-	}
 	return &Scheduler{
 		store:         s,
-		enricher:      enr,
+		enqueuer:      enqueuer,
 		wikiNotifier:  wn,
-		bulkCache:     bulkCache,
 		repoDir:       repoDir,
 		discovery:     discoveryService,
 		discoveryCron: discoveryCron,
@@ -85,9 +70,8 @@ func New(s store.Store, enr *enricher.Enricher, wn *notifier.WikiNotifier, repoD
 
 // Start 注册 cron 并并行触发三源首次同步。
 //
-// 关键约束（2026-06-18）：weekly 冷启动可能耗时数小时（GitHub enrich + rate limit），
-// 绝不能阻塞 zread / discovery cron 注册与冷启动 goroutine——否则 redeploy 后 HN feed
-// 长时间为空。三源共用 github.Client 限流器，并行后仍会抢配额，但至少能立即开跑。
+// 关键约束：三个 Collector 只能并行解析并持久化候选，不能在 scheduler 内调用 GitHub；
+// GitHub 配额由单一 Worker 串行消费，避免某个来源的冷启动阻塞其他来源入队。
 func (s *Scheduler) Start() {
 	log.Println("[scheduler] 注册 cron 并并行启动首次同步（weekly / zread / discovery）...")
 
@@ -146,36 +130,37 @@ func (s *Scheduler) runZreadFetch() {
 	defer s.unlock("zread")
 
 	log.Println("[scheduler] 拉取 zread 周 trending...")
-	sp := spider.NewZreadSpider(s.store.(*store.SQLiteStore))
+	sp := spider.NewZreadSpider(nil)
 	rows, err := sp.FetchRows(context.Background())
 	if err != nil {
 		log.Printf("[scheduler] zread fetch: %v", err)
 		return
 	}
-	ctx := context.Background()
-	written := 0
+	candidates := zreadCandidates(rows)
+	allRepos := make([]string, 0, len(rows))
 	for _, row := range rows {
-		repo, err := s.enricher.EnsureGitHubRepo(ctx, row.Owner, row.Name, false)
-		if err != nil {
-			log.Printf("[scheduler] zread ensure %s/%s: %v", row.Owner, row.Name, err)
-			continue
-		}
-		if err := s.store.AttachZreadEvent(repo.GhRepoID, row); err != nil {
-			log.Printf("[scheduler] zread attach %s/%s: %v", row.Owner, row.Name, err)
-			continue
-		}
-		written++
+		allRepos = append(allRepos, row.Owner+"/"+row.Name)
 	}
-	log.Printf("[scheduler] zread fetch 完成: rows=%d attached=%d", len(rows), written)
+	if len(candidates) > 0 {
+		fetchedAt := rows[0].FetchedAt
+		if fetchedAt == "" {
+			fetchedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		}
+		acceptance, err := s.enqueuer.Enqueue(model.EnqueueBatchRequest{
+			SourceCode: model.SourceZread, Kind: model.IngestKindCollector,
+			IdempotencyKey: "zread:" + fetchedAt, Candidates: candidates,
+		})
+		if err != nil {
+			log.Printf("[scheduler] zread enqueue: %v", err)
+			return
+		}
+		log.Printf("[scheduler] zread fetch 完成: rows=%d batch=%s queued=%d", len(rows), acceptance.BatchID, acceptance.Total)
+	}
 
 	// 异步通知 wiki-api 预热本次 zread 拉取的 repo
 	if s.wikiNotifier.IsEnabled() {
-		repos := s.store.GetAllSourceRepos()
-		s.wikiNotifier.NotifyRepos(repos)
+		s.wikiNotifier.NotifyRepos(allRepos)
 	}
-
-	// R-06.3: zread_events / github_repos 已更新，bulk cache 失效（同 sync() 注释）
-	s.bulkCache.Invalidate()
 }
 
 // SyncZread 手动触发 zread 同步（导出供 admin endpoint 复用）。
@@ -183,7 +168,7 @@ func (s *Scheduler) SyncZread() {
 	go s.runZreadFetch()
 }
 
-// runDiscovery 执行 Show HN collect → GitHub enrich 两阶段（v1.2：移除 LLM classify）。
+// runDiscovery 执行 Show HN collect → 持久化入队，GitHub enrich 由统一 Worker 异步完成。
 func (s *Scheduler) runDiscovery() {
 	if s.discovery == nil {
 		return
@@ -199,11 +184,8 @@ func (s *Scheduler) runDiscovery() {
 		log.Printf("[scheduler] discovery sync: %v", err)
 		return
 	}
-	log.Printf("[scheduler] discovery sync 完成: submissions=%d enriched=%d failures=%d",
-		stats.Submissions, stats.Enriched, stats.Failures)
-
-	// R-06.3: discovery_submissions / github_repos 已更新，bulk cache 失效（同 sync() 注释）
-	s.bulkCache.Invalidate()
+	log.Printf("[scheduler] discovery sync 完成: submissions=%d queued=%d batch=%s",
+		stats.Submissions, stats.Queued, stats.BatchID)
 }
 
 // SyncDiscovery 异步触发 Discovery 同步，供独立 Admin endpoint 复用。
@@ -229,9 +211,6 @@ func (s *Scheduler) unlock(name string) {
 }
 
 // Sync 执行一次完整的 fetcher → parser → store 流程（导出供手动触发）。
-//
-// R-06.3 注：bulkCache.Invalidate 由 s.sync() 末尾统一负责（Start / cron / Sync
-// 三条调用链都经过 sync() 不会漏）。
 func (s *Scheduler) Sync() {
 	repos := s.sync()
 	s.wikiNotifier.NotifyRepos(repos)
@@ -272,23 +251,30 @@ func (s *Scheduler) sync() []string {
 			SourceURL:   srcURL,
 			ParsedAt:    time.Now().UTC(),
 		}
-		if err := s.store.UpsertIssue(&weeklyIssue); err != nil {
-			log.Printf("[scheduler] upsert issue-%d: %v", issue.Number, err)
-			continue
-		}
-
-		// 写入项目
+		candidates := weeklyCandidates(projects, issue.Number, publishedAt, srcURL)
 		for j := range projects {
-			repo, err := s.enricher.EnsureGitHubRepo(context.Background(), projects[j].RepoOwner, projects[j].RepoName, false)
+			project := projects[j]
+			allRepos = append(allRepos, project.RepoOwner+"/"+project.RepoName)
+		}
+		if len(candidates) > 0 {
+			info, _ := os.Stat(issue.Path)
+			version := weeklyIssue.ParsedAt.UnixNano()
+			if info != nil {
+				version = info.ModTime().UTC().UnixNano()
+			}
+			acceptance, err := s.enqueuer.Enqueue(model.EnqueueBatchRequest{
+				SourceCode: model.SourceWeekly, Kind: model.IngestKindCollector,
+				IdempotencyKey: fmt.Sprintf("weekly:%d:%d", issue.Number, version), Candidates: candidates,
+			})
 			if err != nil {
-				log.Printf("[scheduler] ensure %s/%s: %v", projects[j].RepoOwner, projects[j].RepoName, err)
+				log.Printf("[scheduler] enqueue issue-%d: %v", issue.Number, err)
 				continue
 			}
-			if err := s.store.AttachWeeklyEvent(repo.GhRepoID, projects[j], weeklyIssue); err != nil {
-				log.Printf("[scheduler] attach weekly %s/%s: %v", projects[j].RepoOwner, projects[j].RepoName, err)
-				continue
-			}
-			allRepos = append(allRepos, projects[j].RepoOwner+"/"+projects[j].RepoName)
+			log.Printf("[scheduler] issue-%d queued: batch=%s repos=%d", issue.Number, acceptance.BatchID, acceptance.Total)
+		}
+		if err := s.store.UpsertIssue(&weeklyIssue); err != nil {
+			log.Printf("[scheduler] mark issue-%d parsed: %v", issue.Number, err)
+			continue
 		}
 
 		if len(projects) > 0 {
@@ -303,19 +289,46 @@ func (s *Scheduler) sync() []string {
 
 	log.Printf("[scheduler] 同步完成: %d 期新/更新, %d 个 repo, %d 期跳过(无变更)", newCount, len(allRepos), skipped)
 
-	// R-06.3: weekly sync 写入 weekly_extras + github_repos 后，bulk endpoint
-	// 内存缓存的数据已过时；不论本次是否实际新增 repos 都失效（让"刷新但无新数据"
-	// 仍能拿到 fresh ETag，避免客户端误判数据未变）。
-	s.bulkCache.Invalidate()
-
 	return allRepos
+}
+
+func zreadCandidates(rows []model.ZreadTrending) []model.IngestCandidate {
+	candidates := make([]model.IngestCandidate, 0, len(rows))
+	for _, row := range rows {
+		rank := row.RankInWeek
+		occurredAt, _ := time.Parse("2006-01-02", row.WeekStart)
+		candidates = append(candidates, model.IngestCandidate{
+			Owner: row.Owner, Repo: row.Name,
+			ExternalKey: fmt.Sprintf("week:%s:%s/%s", row.WeekStart, strings.ToLower(row.Owner), strings.ToLower(row.Name)),
+			OccurredAt:  occurredAt, Title: row.WeekLabel, Summary: row.DescriptionZh, Rank: &rank,
+			Payload: map[string]any{
+				"week_start": row.WeekStart, "week_end": row.WeekEnd, "zread_repo_id": row.RepoID,
+				"wiki_id": row.WikiID, "zread_year_inferred": row.ZreadYearInferred,
+				"zread_week_start_raw": row.ZreadWeekStartRaw, "zread_week_end_raw": row.ZreadWeekEndRaw,
+			},
+		})
+	}
+	return candidates
+}
+
+func weeklyCandidates(projects []model.Project, issueNumber int, publishedAt time.Time, sourceURL string) []model.IngestCandidate {
+	candidates := make([]model.IngestCandidate, 0, len(projects))
+	for _, project := range projects {
+		candidates = append(candidates, model.IngestCandidate{
+			Owner: project.RepoOwner, Repo: project.RepoName,
+			ExternalKey: fmt.Sprintf("issue:%d:%s/%s", issueNumber, strings.ToLower(project.RepoOwner), strings.ToLower(project.RepoName)),
+			OccurredAt:  publishedAt, SourceURL: sourceURL, Summary: project.Description,
+			Payload: map[string]any{"issue_number": issueNumber},
+		})
+	}
+	return candidates
 }
 
 // shouldSyncWeeklyIssue 判断某期周刊是否要在本轮 sync 中 parse + enrich。
 //
 // redeploy 不得无条件重跑「最近 N 期」——会打满 GitHub 配额并拖住其它数据源。
 // 仅在这些情况重跑：① DB 无该期记录（新刊 / 空库）；② 本地 md 自上次 ParsedAt 后有改动
-//（git pull 更新了文件 mtime）。
+// （git pull 更新了文件 mtime）。
 func shouldSyncWeeklyIssue(existing *model.WeeklyIssue, issuePath string) bool {
 	if existing == nil {
 		return true

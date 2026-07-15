@@ -115,27 +115,6 @@ func (f *fakeBulkStore) GetUnenrichedZreadRepos(int) ([]model.ZreadTrending, err
 func (f *fakeBulkStore) UpdateZreadEnriched(string, string, string, *model.ZreadTrending) error {
 	panic("not used")
 }
-func (f *fakeBulkStore) UpsertDiscoverySubmission(model.DiscoverySubmission) error {
-	panic("not used")
-}
-func (f *fakeBulkStore) GetDiscoveryEnrichmentCandidates(int, time.Time) ([]model.DiscoveryRepo, error) {
-	panic("not used")
-}
-func (f *fakeBulkStore) UpdateDiscoveryEnriched(model.DiscoveryRepo, time.Time) error {
-	panic("not used")
-}
-func (f *fakeBulkStore) UpdateDiscoveryEnrichmentFailure(string, string, string, time.Time) error {
-	panic("not used")
-}
-func (f *fakeBulkStore) MarkDiscoveryUnavailable(string, string, string, time.Time) error {
-	panic("not used")
-}
-func (f *fakeBulkStore) QueryDiscovery(model.DiscoveryQuery) ([]model.DiscoveryItemDTO, int, error) {
-	panic("not used")
-}
-func (f *fakeBulkStore) GetDiscoveryByOwnerRepo(string, string) (*model.DiscoveryItemDTO, error) {
-	panic("not used")
-}
 func (f *fakeBulkStore) GetAggregatedLanguagesFAKE() {} // marker (gosimple no-op，just保编辑器满意)
 func (f *fakeBulkStore) Close() error                { return nil }
 

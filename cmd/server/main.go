@@ -16,7 +16,6 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/dong4j/starcat-weekly-api/internal/discovery"
-	"github.com/dong4j/starcat-weekly-api/internal/enricher"
 	"github.com/dong4j/starcat-weekly-api/internal/github"
 	"github.com/dong4j/starcat-weekly-api/internal/handler"
 	"github.com/dong4j/starcat-weekly-api/internal/ingest"
@@ -93,16 +92,8 @@ func main() {
 
 	// Initialize GitHub client（统一 Token 池 + 速率限制，enricher / discovery / zread 共享）
 	ghClient := github.NewClient(pool, github.NewRateLimitHandler(720*time.Millisecond)) // 5000/h ≈ 720ms
-	enr := enricher.NewEnricher(s, ghClient)
-
-	// AI Discovery 复用同一个 GitHub Client（v1.2：移除 LLM 分类，仅 collect → enrich 两阶段）。
+	// Show HN Collector 只抓取候选并入队，GitHub enrich 统一由 Worker 执行。
 	hnClient := discovery.NewHNClient(nil)
-	discoveryGitHub := discovery.NewGitHubClient(ghClient)
-	discoveryService := discovery.NewService(s, hnClient, discoveryGitHub, discovery.Config{
-		HNLimit:    envInt("DISCOVERY_HN_LIMIT", 30),
-		BatchSize:  envInt("DISCOVERY_BATCH_SIZE", 20),
-		RetryDelay: time.Duration(envInt("DISCOVERY_RETRY_DELAY_MINUTES", 60)) * time.Minute,
-	})
 
 	// Wiki Notifier（增量预热 wiki-api 缓存，通过 WIKI_API_KEY 控制开关）
 	wikiNotifier := notifier.NewWikiNotifier()
@@ -113,16 +104,15 @@ func main() {
 	wakeSignal := ingest.NewWakeSignal()
 	ingestService := ingest.NewService(s, wakeSignal)
 	ingestWorker := ingest.NewWorker(s, ghClient, wakeSignal, bulkCache)
+	discoveryCollector := discovery.NewCollector(hnClient, ingestService, envInt("DISCOVERY_HN_LIMIT", 30))
 	workerContext, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
 	go ingestWorker.Run(workerContext)
 
-	// Initialize scheduler — bulkCache 注入作为 BulkCacheInvalidator，scheduler 跑完
-	// weekly / zread / discovery 同步后主动失效 bulk cache。
-	sch := scheduler.New(s, enr, wikiNotifier, repoDir, discoveryService,
+	// Collector 只入队；Worker 在批次终态统一失效 bulk cache。
+	sch := scheduler.New(s, ingestService, wikiNotifier, repoDir, discoveryCollector,
 		envOrDefault("DISCOVERY_CRON", "17 * * * *"),
-		envOrDefault("ZREAD_TRENDING_CRON", "0 6 * * *"),
-		bulkCache)
+		envOrDefault("ZREAD_TRENDING_CRON", "0 6 * * *"))
 
 	// Initialize HTTP handler
 	wh := handler.NewWeeklyHandler(s, sch.Sync, sch.SyncZread)

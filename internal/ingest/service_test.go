@@ -93,6 +93,29 @@ func TestEnqueueStoreFailureDoesNotWake(t *testing.T) {
 	}
 }
 
+func TestCollectorKeepsDistinctEventsForSameRepo(t *testing.T) {
+	repository, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "collector-events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	service := NewService(repository, NewWakeSignal())
+	service.newID = func() (string, error) { return "collector-events", nil }
+	acceptance, err := service.Enqueue(model.EnqueueBatchRequest{
+		SourceCode: model.SourceDiscovery, Kind: model.IngestKindCollector,
+		IdempotencyKey: "collector-events", Candidates: []model.IngestCandidate{
+			{Owner: "acme", Repo: "agent", ExternalKey: "hn:1:acme/agent"},
+			{Owner: "acme", Repo: "agent", ExternalKey: "hn:2:acme/agent"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acceptance.Total != 2 || acceptance.DuplicateCount != 0 {
+		t.Fatalf("acceptance=%#v", acceptance)
+	}
+}
+
 type errorBatchRepository struct{ err error }
 
 func (r errorBatchRepository) EnqueueIngestBatch(model.EnqueueBatchRequest) (model.EnqueueBatchResult, error) {

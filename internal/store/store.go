@@ -80,15 +80,6 @@ type Store interface {
 	// UpdateZreadEnriched 更新单条 zread 记录的 GitHub 元数据
 	UpdateZreadEnriched(owner, name, weekStart string, z *model.ZreadTrending) error
 
-	// --- AI Discovery（Show HN）v1.2：仅 enrichment 阶段 ---
-	UpsertDiscoverySubmission(submission model.DiscoverySubmission) error
-	GetDiscoveryEnrichmentCandidates(limit int, now time.Time) ([]model.DiscoveryRepo, error)
-	UpdateDiscoveryEnriched(repo model.DiscoveryRepo, now time.Time) error
-	UpdateDiscoveryEnrichmentFailure(owner, repo, message string, nextRetryAt time.Time) error
-	MarkDiscoveryUnavailable(owner, repo, message string, now time.Time) error
-	QueryDiscovery(params model.DiscoveryQuery) ([]model.DiscoveryItemDTO, int, error)
-	GetDiscoveryByOwnerRepo(owner, repo string) (*model.DiscoveryItemDTO, error)
-
 	// Close 关闭数据库连接
 	Close() error
 }
