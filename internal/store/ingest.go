@@ -172,3 +172,82 @@ func (s *SQLiteStore) getIngestItems(batchID string) ([]model.IngestItem, error)
 	}
 	return items, rows.Err()
 }
+
+// GetSourceStatuses 返回固定来源目录及持久化队列状态，供 Skill 能力发现和本地控制台复用。
+func (s *SQLiteStore) GetSourceStatuses(manualOnly bool) ([]model.SourceStatus, error) {
+	query := `
+		SELECT code, display_name_zh, display_name_en, icon_key, ingest_mode,
+		       sort_order, enabled, manual_import_enabled
+		FROM source_catalog`
+	if manualOnly {
+		query += ` WHERE manual_import_enabled=1`
+	}
+	query += ` ORDER BY sort_order`
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	var statuses []model.SourceStatus
+	for rows.Next() {
+		var item model.SourceStatus
+		var enabled, manual int
+		if err := rows.Scan(&item.Code, &item.DisplayNameZH, &item.DisplayNameEN, &item.IconKey,
+			&item.IngestMode, &item.SortOrder, &enabled, &manual); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		item.Enabled = enabled == 1
+		item.ManualImportEnabled = manual == 1
+		statuses = append(statuses, item)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	for index := range statuses {
+		item := &statuses[index]
+		if err := s.db.QueryRow(`
+			SELECT COUNT(DISTINCT e.gh_repo_id)
+			FROM repo_source_events e JOIN github_repos gr ON gr.gh_repo_id=e.gh_repo_id
+			WHERE e.source_code=? AND gr.is_available=1`, item.Code).Scan(&item.Count); err != nil {
+			return nil, err
+		}
+		if err := s.db.QueryRow(`
+			SELECT
+				COALESCE(SUM(CASE WHEN i.status=? THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN i.status=? THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN i.status=? THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN i.status=? THEN 1 ELSE 0 END), 0)
+			FROM ingest_items i JOIN ingest_batches b ON b.id=i.batch_id
+			WHERE b.source_code=?`, model.IngestItemPending, model.IngestItemProcessing,
+			model.IngestItemRetrying, model.IngestItemDiscarded, item.Code).
+			Scan(&item.Pending, &item.Processing, &item.Retrying, &item.Discarded); err != nil {
+			return nil, err
+		}
+		var lastSuccess, lastFailure sql.NullString
+		if err := s.db.QueryRow(`
+			SELECT
+				MAX(CASE WHEN status IN (?, ?) THEN finished_at END),
+				MAX(CASE WHEN status=? THEN finished_at END)
+			FROM ingest_batches WHERE source_code=?`, model.IngestBatchSuccess,
+			model.IngestBatchPartialSuccess, model.IngestBatchFailed, item.Code).
+			Scan(&lastSuccess, &lastFailure); err != nil {
+			return nil, err
+		}
+		item.LastSuccessAt = lastSuccess.String
+		item.LastFailureAt = lastFailure.String
+		var latestID string
+		if err := s.db.QueryRow(`SELECT id FROM ingest_batches WHERE source_code=? ORDER BY created_at DESC, id DESC LIMIT 1`, item.Code).Scan(&latestID); err != nil {
+			if err != sql.ErrNoRows {
+				return nil, err
+			}
+		} else {
+			batch, err := s.GetIngestBatch(latestID, false)
+			if err != nil {
+				return nil, err
+			}
+			item.LatestBatch = batch
+		}
+	}
+	return statuses, nil
+}

@@ -111,6 +111,7 @@ func main() {
 	// 单例，由 handler.HandleBulkV1 读 + scheduler / RebuildAggregates 写（Invalidate）。
 	bulkCache := handler.NewBulkCache()
 	wakeSignal := ingest.NewWakeSignal()
+	ingestService := ingest.NewService(s, wakeSignal)
 	ingestWorker := ingest.NewWorker(s, ghClient, wakeSignal, bulkCache)
 	workerContext, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
@@ -127,6 +128,7 @@ func main() {
 	wh := handler.NewWeeklyHandler(s, sch.Sync, sch.SyncZread)
 	rh := handler.NewReposHandlerWithBulkCache(s, bulkCache)
 	dh := handler.NewDiscoveryHandler(s, sch.SyncDiscovery)
+	ih := handler.NewImportsHandler(ingestService, s)
 
 	// Register routes (Go 1.22+ style)
 	// 注意：authMW.Wrap 接受 http.Handler。把 method value (func(w,r)) 显式包装为
@@ -148,11 +150,15 @@ func main() {
 	mux.Handle("GET /api/v1/repos/{gh_repo_id}", authMW.Wrap(http.HandlerFunc(rh.HandleDetailV1)))
 
 	// Admin Endpoints (authenticated)
-	mux.Handle("POST /internal/sync/weekly", authMW.Wrap(http.HandlerFunc(wh.HandleAdminSync)))
+	mux.Handle("POST /internal/sync/weekly", adminAuthMW.Wrap(http.HandlerFunc(wh.HandleAdminSync)))
 	// v0.5 R-02 新增：zread 同步 admin 端点（与阮一峰周刊同步解耦）
-	mux.Handle("POST /internal/sync/zread", authMW.Wrap(http.HandlerFunc(wh.HandleZreadSync)))
+	mux.Handle("POST /internal/sync/zread", adminAuthMW.Wrap(http.HandlerFunc(wh.HandleZreadSync)))
 	mux.Handle("POST /internal/sync/discovery", adminAuthMW.Wrap(http.HandlerFunc(dh.HandleAdminSync)))
 	mux.Handle("POST /internal/rebuild-aggregates", adminAuthMW.Wrap(http.HandlerFunc(rh.HandleRebuildAggregates)))
+	mux.Handle("GET /internal/sources", adminAuthMW.Wrap(http.HandlerFunc(ih.HandleSources)))
+	mux.Handle("POST /internal/imports", adminAuthMW.Wrap(http.HandlerFunc(ih.HandleCreate)))
+	mux.Handle("GET /internal/imports/{batch_id}", adminAuthMW.Wrap(http.HandlerFunc(ih.HandleBatch)))
+	mux.Handle("GET /internal/ingest-batches/{batch_id}", adminAuthMW.Wrap(http.HandlerFunc(ih.HandleBatch)))
 
 	// Start scheduler (initial sync + cron)
 	go sch.Start()
@@ -181,6 +187,9 @@ func main() {
 	log.Printf("  POST /internal/sync/zread       - Trigger manual sync (zread 周 trending)")
 	log.Printf("  POST /internal/sync/discovery   - Trigger manual sync (ADMIN_API_KEYS)")
 	log.Printf("  POST /internal/rebuild-aggregates - Recompute source aggregates")
+	log.Printf("  GET  /internal/sources           - List fixed sources and ingest status")
+	log.Printf("  POST /internal/imports           - Enqueue a manual repository batch")
+	log.Printf("  GET  /internal/imports/{id}      - Inspect ingest batch status")
 	handler := middleware.CORS(mux)
 	log.Fatal(http.ListenAndServe(":"+port, handler))
 }

@@ -32,6 +32,15 @@ type Service struct {
 	newID      func() (string, error)
 }
 
+// ValidationError 表示调用方可修正的 400 错误；数据库错误仍作为 500 交给 handler。
+type ValidationError struct{ Message string }
+
+func (e *ValidationError) Error() string { return e.Message }
+
+func validationErrorf(format string, args ...any) error {
+	return &ValidationError{Message: fmt.Sprintf(format, args...)}
+}
+
 func NewService(repository batchRepository, wake *WakeSignal) *Service {
 	return &Service{repository: repository, wake: wake, now: time.Now, newID: newUUID}
 }
@@ -39,23 +48,23 @@ func NewService(repository batchRepository, wake *WakeSignal) *Service {
 func (s *Service) Enqueue(request model.EnqueueBatchRequest) (model.IngestBatchAcceptance, error) {
 	definition, ok := source.Find(request.SourceCode)
 	if !ok || !definition.Enabled {
-		return model.IngestBatchAcceptance{}, fmt.Errorf("source_code %q is not enabled", request.SourceCode)
+		return model.IngestBatchAcceptance{}, validationErrorf("source_code %q is not enabled", request.SourceCode)
 	}
 	if request.Kind == model.IngestKindManualImport && !definition.ManualImportEnabled {
-		return model.IngestBatchAcceptance{}, fmt.Errorf("source_code %q does not allow manual import", request.SourceCode)
+		return model.IngestBatchAcceptance{}, validationErrorf("source_code %q does not allow manual import", request.SourceCode)
 	}
 	if request.Kind != model.IngestKindCollector && request.Kind != model.IngestKindManualImport && request.Kind != model.IngestKindBackfill {
-		return model.IngestBatchAcceptance{}, fmt.Errorf("invalid ingest kind %q", request.Kind)
+		return model.IngestBatchAcceptance{}, validationErrorf("invalid ingest kind %q", request.Kind)
 	}
 	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
 	if request.IdempotencyKey == "" {
-		return model.IngestBatchAcceptance{}, fmt.Errorf("idempotency_key is required")
+		return model.IngestBatchAcceptance{}, validationErrorf("idempotency_key is required")
 	}
 	if len(request.Candidates) == 0 {
-		return model.IngestBatchAcceptance{}, fmt.Errorf("repositories must not be empty")
+		return model.IngestBatchAcceptance{}, validationErrorf("repositories must not be empty")
 	}
 	if len(request.Candidates) > maxBatchSize {
-		return model.IngestBatchAcceptance{}, fmt.Errorf("repositories exceeds limit %d", maxBatchSize)
+		return model.IngestBatchAcceptance{}, validationErrorf("repositories exceeds limit %d", maxBatchSize)
 	}
 
 	id, err := s.newID()
@@ -70,7 +79,7 @@ func (s *Service) Enqueue(request model.EnqueueBatchRequest) (model.IngestBatchA
 		candidate.Owner = strings.TrimSpace(candidate.Owner)
 		candidate.Repo = strings.TrimSpace(candidate.Repo)
 		if !ownerPattern.MatchString(candidate.Owner) || !repoPattern.MatchString(candidate.Repo) {
-			return model.IngestBatchAcceptance{}, fmt.Errorf("invalid repository at index %d: %s/%s", index, candidate.Owner, candidate.Repo)
+			return model.IngestBatchAcceptance{}, validationErrorf("invalid repository at index %d: %s/%s", index, candidate.Owner, candidate.Repo)
 		}
 		normalized := strings.ToLower(candidate.Owner + "/" + candidate.Repo)
 		if _, exists := seen[normalized]; exists {

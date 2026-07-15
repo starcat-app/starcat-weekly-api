@@ -16,6 +16,15 @@ func writeJSON[T any](w http.ResponseWriter, data T) {
 	writeJSONWithMeta(w, data, nil)
 }
 
+// writeJSONStatus 用于 201/202 等成功状态，保持与 200 相同 envelope。
+func writeJSONStatus[T any](w http.ResponseWriter, status int, data T) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(model.Envelope[T]{SchemaVersion: 1, Data: data}); err != nil {
+		log.Printf("[handler] failed to encode envelope: %v", err)
+	}
+}
+
 // writeJSONWithMeta 将任意类型包装成 envelope + meta 写入 200 响应。
 func writeJSONWithMeta[T any](w http.ResponseWriter, data T, meta *model.Meta) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

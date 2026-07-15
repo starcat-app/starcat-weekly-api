@@ -12,6 +12,21 @@ type SourceDescriptor struct {
 	Count         int    `json:"count"`
 }
 
+// SourceStatus 是管理端来源目录及队列运行状态。
+type SourceStatus struct {
+	SourceDescriptor
+	IngestMode          string       `json:"ingest_mode"`
+	Enabled             bool         `json:"enabled"`
+	ManualImportEnabled bool         `json:"manual_import_enabled"`
+	Pending             int          `json:"pending"`
+	Processing          int          `json:"processing"`
+	Retrying            int          `json:"retrying"`
+	Discarded           int          `json:"discarded"`
+	LastSuccessAt       string       `json:"last_success_at,omitempty"`
+	LastFailureAt       string       `json:"last_failure_at,omitempty"`
+	LatestBatch         *IngestBatch `json:"latest_batch,omitempty"`
+}
+
 // SourceEntry 是仓库在某个来源中的最新代表事件。
 // Payload 只承载来源专属补充字段，通用筛选不得依赖其中内容。
 type SourceEntry struct {
