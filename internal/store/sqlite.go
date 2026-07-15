@@ -35,14 +35,11 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	return s, nil
 }
 
-// createSchema creates the R-04 aggregate schema from scratch.
-//
-// Starcat has not shipped yet, so the service intentionally does not keep
-// migrations or old-table compatibility. Existing local *.db files should be
-// deleted before running this version.
+// createSchema 先确保当前线上基线表存在，再追加执行版本 migration。
+// 旧表暂时保留一个发布窗口作为回滚证据，但新功能不得再以删库重建为升级手段。
 func (s *SQLiteStore) createSchema() error {
 	log.Println("[store] createSchema: github_repos + weekly_extras + zread_events + discovery_submissions")
-	_, err := s.db.Exec(`
+	if _, err := s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS github_repos (
 			gh_repo_id        INTEGER PRIMARY KEY,
 			owner             TEXT NOT NULL,
@@ -126,8 +123,10 @@ func (s *SQLiteStore) createSchema() error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_discovery_submissions_repo_time ON discovery_submissions(gh_repo_id, published_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_discovery_submissions_time ON discovery_submissions(published_at DESC, hn_id DESC);
-	`)
-	return err
+	`); err != nil {
+		return err
+	}
+	return s.runMigrations()
 }
 
 func (s *SQLiteStore) Close() error { return s.db.Close() }

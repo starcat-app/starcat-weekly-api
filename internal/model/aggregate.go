@@ -7,9 +7,11 @@ import (
 )
 
 const (
-	SourceWeekly    = "weekly"
-	SourceZread     = "zread"
-	SourceDiscovery = "discovery"
+	SourceWeekly         = "weekly"
+	SourceZread          = "zread"
+	SourceDiscovery      = "discovery"
+	SourceHelloGitHub    = "hellogithub"
+	SourceAIIntelligence = "ai_intelligence"
 
 	UncategorizedLanguageKey   = "__uncategorized__"
 	UncategorizedLanguageLabel = "Uncategorized"
