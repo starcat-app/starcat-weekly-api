@@ -53,10 +53,9 @@ brew install --cask starcat
 > Starcat 为普通用户提供默认托管服务。这个 API 开源出来，是为了让进阶用户可以审查实现、本地运行，或部署自己的实例。
 <!-- starcat-promo:end -->
 
-Starcat Weekly 后端服务 —— 解析[阮一峰周刊](https://github.com/ruanyf/weekly)推荐的 GitHub 开源项目，
-并接入 [zread.ai](https://zread.ai) 公开周 trending 列表（v0.5 R-02 翻转加入），
-以及 Hacker News 官方 API 的 Show HN AI 项目发现流水线（v0.6），
-通过 REST API 提供给 [Starcat](https://starcat.ink) 前端。
+Starcat Weekly 后端服务 —— 聚合[阮一峰周刊](https://github.com/ruanyf/weekly)、
+[zread.ai](https://zread.ai)、Show HN、HelloGitHub 与受控人工情报来源中的 GitHub 项目，
+通过统一 REST API 提供给 [Starcat](https://starcat.ink) 前端。
 
 ## R-01 改造说明
 
@@ -67,10 +66,9 @@ Starcat Weekly 后端服务 —— 解析[阮一峰周刊](https://github.com/ru
 - **鉴权机制**：引入 `Bearer Token` 鉴权（需 `Authorization` 头）。
 - **Token 池**：支持 `GITHUB_TOKENS` 多 token 轮换。
 
-## v0.5 R-02 新增（zread 周 trending 接入）
+## v0.5 R-02（ZRead 来源）
 
-- **新端点** `GET /api/v1/zread?week=this|last|YYYY-MM-DD&limit=20`
-  详见 [API 文档](#zread-周-trending-v05-新增) 章节
+- **统一列表** `GET /api/v1/repos?source=zread`，不再保留独立公开列表端点
 - **新表** `zread_trending`（0.5.0 新建,决策 ① 独立建表不合并 projects）
 - **新 cron 任务** 周一 06:00 UTC 拉 zread 公开 JSON 端点并写入数据库
 
