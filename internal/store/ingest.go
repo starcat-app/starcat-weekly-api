@@ -237,7 +237,16 @@ func (s *SQLiteStore) GetSourceStatuses(manualOnly bool) ([]model.SourceStatus, 
 		item.LastSuccessAt = lastSuccess.String
 		item.LastFailureAt = lastFailure.String
 		var latestID string
-		if err := s.db.QueryRow(`SELECT id FROM ingest_batches WHERE source_code=? ORDER BY created_at DESC, id DESC LIMIT 1`, item.Code).Scan(&latestID); err != nil {
+		// HelloGitHub 历史回填会为每一期创建子批次。控制台刷新时必须优先返回仍在运行的
+		// controller，否则较新的子批次会遮蔽总进度，服务重启后也无法继续展示 checkpoint。
+		if err := s.db.QueryRow(`
+			SELECT id FROM ingest_batches
+			WHERE source_code=?
+			ORDER BY
+				CASE WHEN json_extract(cursor_json, '$.controller')=1 AND status IN (?, ?) THEN 0 ELSE 1 END,
+				created_at DESC,
+				id DESC
+			LIMIT 1`, item.Code, model.IngestBatchPending, model.IngestBatchProcessing).Scan(&latestID); err != nil {
 			if err != sql.ErrNoRows {
 				return nil, err
 			}

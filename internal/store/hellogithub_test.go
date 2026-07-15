@@ -69,3 +69,39 @@ func TestHelloGitHubBackfillRetryWaitsUntilDue(t *testing.T) {
 		t.Fatalf("batch=%+v err=%v", batch, err)
 	}
 }
+
+func TestSourceStatusKeepsActiveHelloGitHubBackfillVisible(t *testing.T) {
+	s, err := NewSQLiteStore(filepath.Join(t.TempDir(), "hellogithub-status.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_, _, err = s.CreateHelloGitHubBackfill(model.HelloGitHubBackfillStart{ID: "controller", FromVolume: 1, ToVolume: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.NextHelloGitHubBackfill(time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	// 子批次后创建，模拟回填已处理一期；来源状态仍应返回总任务 controller。
+	if _, err := s.EnqueueIngestBatch(model.EnqueueBatchRequest{
+		ID: "volume-1", SourceCode: model.SourceHelloGitHub, Kind: model.IngestKindCollector,
+		Cursor: map[string]any{"volume": 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	statuses, err := s.GetSourceStatuses(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range statuses {
+		if status.Code == model.SourceHelloGitHub {
+			if status.LatestBatch == nil || status.LatestBatch.ID != "controller" {
+				t.Fatalf("latest_batch=%+v", status.LatestBatch)
+			}
+			return
+		}
+	}
+	t.Fatal("HelloGitHub source status missing")
+}
