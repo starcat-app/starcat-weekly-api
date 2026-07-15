@@ -28,13 +28,7 @@ func TestMultiSourceMigrationBackfillsLegacyEventsAndIsIdempotent(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := legacy.AttachWeeklyEvent(42, model.Project{FirstIssueNumber: 100, IssueURL: "https://weekly.example/100", Description: "weekly summary"}, model.WeeklyIssue{Number: 100, PublishedAt: now.Add(-48 * time.Hour), SourceURL: "https://weekly.example/100", ParsedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	if err := legacy.AttachZreadEvent(42, model.ZreadTrending{WeekStart: "2026-07-13", WeekEnd: "2026-07-19", RankInWeek: 3, DescriptionZh: "zread summary", FetchedAt: now.Format(time.RFC3339)}); err != nil {
-		t.Fatal(err)
-	}
-	if err := legacy.AttachDiscoveryEvent(42, model.DiscoverySubmission{HNID: 123, Title: "Show HN", HNURL: "https://news.ycombinator.com/item?id=123", Score: 10, Comments: 2, PublishedAt: now.Add(-time.Hour), FirstSeenAt: now, LastSeenAt: now}); err != nil {
+	if err := seedLegacySourceRows(legacy.db, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := legacy.Close(); err != nil {
@@ -64,6 +58,24 @@ func TestMultiSourceMigrationBackfillsLegacyEventsAndIsIdempotent(t *testing.T) 
 		t.Fatal(err)
 	}
 	assertRowCount(t, store.db, `SELECT COUNT(*) FROM repo_source_events WHERE gh_repo_id=42`, 3)
+}
+
+func seedLegacySourceRows(db *sql.DB, now time.Time) error {
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO weekly_issues(number, published_at, source_url, parsed_at) VALUES (100, ?, 'https://weekly.example/100', ?)`, []any{now.Add(-48 * time.Hour).Format(time.RFC3339), now.Format(time.RFC3339)}},
+		{`INSERT INTO weekly_extras(gh_repo_id, first_issue_number, issue_url, recommendation, parsed_at) VALUES (42, 100, 'https://weekly.example/100', 'weekly summary', ?)`, []any{now.Format(time.RFC3339)}},
+		{`INSERT INTO zread_events(gh_repo_id, week_start, week_end, rank_in_week, description_zh, fetched_at) VALUES (42, '2026-07-13', '2026-07-19', 3, 'zread summary', ?)`, []any{now.Format(time.RFC3339)}},
+		{`INSERT INTO discovery_submissions(hn_id, gh_repo_id, title, hn_url, score, comments, published_at, first_seen_at, last_seen_at) VALUES (123, 42, 'Show HN', 'https://news.ycombinator.com/item?id=123', 10, 2, ?, ?, ?)`, []any{now.Add(-time.Hour).Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339)}},
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement.query, statement.args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func TestFixedSourceCatalogOnlyAllowsAIIntelligenceManualImport(t *testing.T) {

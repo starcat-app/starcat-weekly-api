@@ -1,0 +1,38 @@
+package model
+
+import "time"
+
+// SourceDescriptor 是 bulk v2 返回给客户端的动态来源目录项。
+type SourceDescriptor struct {
+	Code          string `json:"code"`
+	DisplayNameZH string `json:"display_name_zh"`
+	DisplayNameEN string `json:"display_name_en"`
+	IconKey       string `json:"icon_key"`
+	SortOrder     int    `json:"sort_order"`
+	Count         int    `json:"count"`
+}
+
+// SourceEntry 是仓库在某个来源中的最新代表事件。
+// Payload 只承载来源专属补充字段，通用筛选不得依赖其中内容。
+type SourceEntry struct {
+	SourceCode string         `json:"source_code"`
+	OccurredAt string         `json:"occurred_at"`
+	SourceURL  string         `json:"source_url,omitempty"`
+	Title      string         `json:"title,omitempty"`
+	Summary    string         `json:"summary,omitempty"`
+	Rank       *int           `json:"rank,omitempty"`
+	Payload    map[string]any `json:"payload,omitempty"`
+}
+
+// SourceEventInput 是 Collector 与 Worker 写入来源事实的内部模型。
+// ExternalKey 必须在来源内部稳定，确保重试和服务重启不会产生重复事件。
+type SourceEventInput struct {
+	SourceCode  string
+	ExternalKey string
+	OccurredAt  time.Time
+	SourceURL   string
+	Title       string
+	Summary     string
+	Rank        *int
+	Payload     map[string]any
+}

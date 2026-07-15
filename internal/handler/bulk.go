@@ -3,7 +3,7 @@
 // R-06.3（2026-06-15）：weekly 客户端整张视图（~4000 条聚合 repo + languages 聚合）
 // 一次性出，避免老路径的"分页拉 80+ 次 /api/v1/repos"网络浪费。
 //
-// 响应形式（schema_version=1）:
+// 响应形式（schema_version=2）:
 //
 //	{
 //	  "schema_version": 1,
@@ -44,6 +44,7 @@ import (
 // 后再读 languages 副表（虽然 Go encoding/json 不保证 stream parse，但稳定字段
 // 顺序对 LLM/CLI 调试也更友好）。
 type bulkData struct {
+	Sources   []model.SourceDescriptor  `json:"sources"`
 	Repos     []model.RepoFeedItem      `json:"repos"`
 	Languages []model.LanguageAggregate `json:"languages"`
 }
@@ -71,10 +72,17 @@ func HandleBulkV1(s store.Store, cache *BulkCache) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to query languages", nil)
 			return
 		}
+		sources, err := s.GetSourceCatalog()
+		if err != nil {
+			log.Printf("[handler] GetSourceCatalog: %v", err)
+			writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to query sources", nil)
+			return
+		}
 
 		env := model.Envelope[bulkData]{
-			SchemaVersion: 1,
+			SchemaVersion: 2,
 			Data: bulkData{
+				Sources:   sources,
 				Repos:     repos,
 				Languages: langs,
 			},

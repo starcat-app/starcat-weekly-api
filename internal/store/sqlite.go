@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"sort"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/dong4j/starcat-weekly-api/internal/model"
+	"github.com/dong4j/starcat-weekly-api/internal/source"
 )
 
 type SQLiteStore struct {
@@ -209,107 +209,91 @@ func (s *SQLiteStore) MarkGitHubRepoUnavailable(owner, name, _ string, now time.
 }
 
 func (s *SQLiteStore) AttachWeeklyEvent(repoID int64, project model.Project, issue model.WeeklyIssue) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer rollback(tx)
-
 	if issue.PublishedAt.IsZero() {
 		issue.PublishedAt = time.Now().UTC()
 	}
-	if issue.ParsedAt.IsZero() {
-		issue.ParsedAt = time.Now().UTC()
+	issueNumber := project.FirstIssueNumber
+	if issueNumber == 0 {
+		issueNumber = issue.Number
 	}
-	if _, err := tx.Exec(`
-		INSERT INTO weekly_issues(number, published_at, source_url, parsed_at)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(number) DO UPDATE SET
-			published_at=excluded.published_at,
-			source_url=excluded.source_url,
-			parsed_at=excluded.parsed_at
-	`, issue.Number, issue.PublishedAt.UTC().Format(time.RFC3339), issue.SourceURL, issue.ParsedAt.UTC().Format(time.RFC3339)); err != nil {
-		return err
+	sourceURL := project.IssueURL
+	if sourceURL == "" {
+		sourceURL = issue.SourceURL
 	}
-	if _, err := tx.Exec(`
-		INSERT INTO weekly_extras(gh_repo_id, first_issue_number, issue_url, recommendation, parsed_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(gh_repo_id) DO UPDATE SET
-			first_issue_number = CASE
-				WHEN excluded.first_issue_number < weekly_extras.first_issue_number THEN excluded.first_issue_number
-				ELSE weekly_extras.first_issue_number
-			END,
-			issue_url = CASE
-				WHEN excluded.first_issue_number < weekly_extras.first_issue_number THEN excluded.issue_url
-				ELSE weekly_extras.issue_url
-			END,
-			recommendation = COALESCE(NULLIF(weekly_extras.recommendation, ''), excluded.recommendation),
-			parsed_at=excluded.parsed_at
-	`, repoID, project.FirstIssueNumber, project.IssueURL, project.Description, issue.ParsedAt.UTC().Format(time.RFC3339)); err != nil {
-		return err
-	}
-	if err := recomputeAggregateTx(tx, repoID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.UpsertSourceEvent(repoID, model.SourceEventInput{
+		SourceCode: model.SourceWeekly, ExternalKey: fmt.Sprintf("issue:%d:%d", issueNumber, repoID),
+		OccurredAt: issue.PublishedAt, SourceURL: sourceURL, Summary: project.Description,
+		Payload: map[string]any{"issue_number": issueNumber},
+	})
 }
 
 func (s *SQLiteStore) AttachZreadEvent(repoID int64, event model.ZreadTrending) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
+	occurredAt, _ := time.Parse("2006-01-02", event.WeekStart)
+	if occurredAt.IsZero() {
+		occurredAt = parseTime(event.FetchedAt)
 	}
-	defer rollback(tx)
-	if _, err := tx.Exec(`
-		INSERT INTO zread_events (
-			gh_repo_id, week_start, week_end, week_label, rank_in_week, description_zh,
-			zread_repo_id, wiki_id, zread_week_start_raw, zread_week_end_raw,
-			zread_year_inferred, fetched_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(gh_repo_id, week_start) DO UPDATE SET
-			week_end=excluded.week_end,
-			week_label=excluded.week_label,
-			rank_in_week=excluded.rank_in_week,
-			description_zh=excluded.description_zh,
-			zread_repo_id=excluded.zread_repo_id,
-			wiki_id=excluded.wiki_id,
-			zread_week_start_raw=excluded.zread_week_start_raw,
-			zread_week_end_raw=excluded.zread_week_end_raw,
-			zread_year_inferred=excluded.zread_year_inferred,
-			fetched_at=excluded.fetched_at
-	`, repoID, event.WeekStart, nullString(event.WeekEnd), nullString(event.WeekLabel), event.RankInWeek,
-		nullString(event.DescriptionZh), nullString(event.RepoID), nullString(event.WikiID),
-		nullString(event.ZreadWeekStartRaw), nullString(event.ZreadWeekEndRaw), event.ZreadYearInferred, event.FetchedAt); err != nil {
-		return err
-	}
-	if err := recomputeAggregateTx(tx, repoID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	rank := event.RankInWeek
+	return s.UpsertSourceEvent(repoID, model.SourceEventInput{
+		SourceCode: model.SourceZread, ExternalKey: fmt.Sprintf("week:%s:%d", event.WeekStart, repoID),
+		OccurredAt: occurredAt, Title: event.WeekLabel, Summary: event.DescriptionZh, Rank: &rank,
+		Payload: map[string]any{
+			"week_start": event.WeekStart, "week_end": event.WeekEnd, "zread_repo_id": event.RepoID,
+			"wiki_id": event.WikiID, "zread_year_inferred": event.ZreadYearInferred,
+			"zread_week_start_raw": event.ZreadWeekStartRaw, "zread_week_end_raw": event.ZreadWeekEndRaw,
+		},
+	})
 }
 
 func (s *SQLiteStore) AttachDiscoveryEvent(repoID int64, sub model.DiscoverySubmission) error {
+	return s.UpsertSourceEvent(repoID, model.SourceEventInput{
+		SourceCode: model.SourceDiscovery, ExternalKey: fmt.Sprintf("hn:%d", sub.HNID),
+		OccurredAt: sub.PublishedAt, SourceURL: sub.HNURL, Title: sub.Title,
+		Payload: map[string]any{
+			"hn_id": sub.HNID, "score": sub.Score, "comments": sub.Comments,
+			"github_source_url": sub.SourceURL,
+		},
+	})
+}
+
+// UpsertSourceEvent 是所有来源事实的唯一写入口。
+// 写事件与重建 repo 聚合字段处于同一短事务，调用方不得在该事务中执行网络请求。
+func (s *SQLiteStore) UpsertSourceEvent(repoID int64, event model.SourceEventInput) error {
+	if _, ok := source.Find(event.SourceCode); !ok {
+		return fmt.Errorf("unknown source_code %q", event.SourceCode)
+	}
+	if strings.TrimSpace(event.ExternalKey) == "" {
+		return fmt.Errorf("external_key is required")
+	}
+	if event.OccurredAt.IsZero() {
+		event.OccurredAt = time.Now().UTC()
+	}
+	payload, err := json.Marshal(event.Payload)
+	if err != nil {
+		return fmt.Errorf("encode source payload: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer rollback(tx)
 	if _, err := tx.Exec(`
-		INSERT INTO discovery_submissions(
-			hn_id, gh_repo_id, title, hn_url, source_url, score, comments,
-			published_at, first_seen_at, last_seen_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(hn_id) DO UPDATE SET
+		INSERT INTO repo_source_events(
+			source_code, external_key, gh_repo_id, occurred_at, source_url,
+			title, summary, rank, payload_json, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(source_code, external_key) DO UPDATE SET
 			gh_repo_id=excluded.gh_repo_id,
-			title=excluded.title,
-			hn_url=excluded.hn_url,
+			occurred_at=excluded.occurred_at,
 			source_url=excluded.source_url,
-			score=excluded.score,
-			comments=excluded.comments,
-			published_at=excluded.published_at,
-			last_seen_at=excluded.last_seen_at
-	`, sub.HNID, repoID, sub.Title, sub.HNURL, nullString(sub.SourceURL), sub.Score, sub.Comments,
-		sub.PublishedAt.UTC().Format(time.RFC3339), sub.FirstSeenAt.UTC().Format(time.RFC3339), sub.LastSeenAt.UTC().Format(time.RFC3339)); err != nil {
+			title=excluded.title,
+			summary=excluded.summary,
+			rank=excluded.rank,
+			payload_json=excluded.payload_json,
+			updated_at=excluded.updated_at
+	`, event.SourceCode, event.ExternalKey, repoID, event.OccurredAt.UTC().Format(time.RFC3339),
+		nullString(event.SourceURL), nullString(event.Title), nullString(event.Summary), event.Rank,
+		string(payload), now, now); err != nil {
 		return err
 	}
 	if err := recomputeAggregateTx(tx, repoID); err != nil {
@@ -371,12 +355,11 @@ func (s *SQLiteStore) QueryRepos(params model.RepoQuery) ([]model.RepoFeedItem, 
 // QueryAllRepos 返回当前可用的全部 repos（不分页 / 不过滤 / 默认排序）。
 //
 // R-06.3：为 /api/v1/repos/bulk 提供"全量一次性出"的查询路径。约束:
-//   - 只取 is_available=1 + 至少一个源（weekly / zread / discovery）的 repo
+//   - 只取 is_available=1 + 至少一个已启用来源事件的 repo
 //   - ORDER BY latest_event_at DESC, gh_repo_id DESC（与 QueryRepos 默认一致）
 //   - 不接受任何过滤参数（客户端拿到全量后本地做 source/lang/sort 过滤）
-//   - feedItem 仍按 repo 一条条拼（每条 repo 内含 weekly/zread/discovery 三快照 N+1
-//     查询），4000 条 repos × 3 表查询 ≈ 12000 次 SQLite 调用；现网测试 ~50ms 量级
-//     可接受（bulk endpoint 6h 缓存兜底，并发并不会让查询打爆）
+//   - feedItem 按 repo 拼通用来源代表事件、兼容快照和置顶状态；bulk cache 会吸收
+//     这条全量查询的成本，后续可在性能审查中再合并为单条聚合 SQL
 func (s *SQLiteStore) QueryAllRepos() ([]model.RepoFeedItem, error) {
 	rows, err := s.db.Query(`SELECT ` + githubRepoColumns() + ` FROM github_repos gr WHERE gr.is_available=1 AND ` + hasAnySourceSQL() + ` ORDER BY gr.latest_event_at DESC, gr.gh_repo_id DESC`)
 	if err != nil {
@@ -429,7 +412,7 @@ func (s *SQLiteStore) GetRepoDetail(repoID int64) (*model.RepoDetail, error) {
 	return &model.RepoDetail{Repo: item, Events: events}, nil
 }
 
-// GetAggregatedLanguages 聚合 weekly 三源 repo 的语言列表,供客户端 picker / sidebar 使用。
+// GetAggregatedLanguages 聚合全部已启用 Weekly 来源 repo 的语言列表,供客户端 picker / sidebar 使用。
 //
 // 排序约定（dong4j 2026-06-16 调整 — 与 trending 后端同款）:
 //
@@ -465,6 +448,34 @@ func (s *SQLiteStore) GetAggregatedLanguages() ([]model.LanguageAggregate, error
 		item.Label = item.Key
 		if item.Key == model.UncategorizedLanguageKey {
 			item.Label = model.UncategorizedLanguageLabel
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+// GetSourceCatalog 返回已启用且至少存在一条公开仓库事件的来源目录。
+func (s *SQLiteStore) GetSourceCatalog() ([]model.SourceDescriptor, error) {
+	rows, err := s.db.Query(`
+		SELECT sc.code, sc.display_name_zh, sc.display_name_en, sc.icon_key,
+		       sc.sort_order, COUNT(DISTINCT e.gh_repo_id)
+		FROM source_catalog sc
+		JOIN repo_source_events e ON e.source_code=sc.code
+		JOIN github_repos gr ON gr.gh_repo_id=e.gh_repo_id AND gr.is_available=1
+		WHERE sc.enabled=1
+		GROUP BY sc.code, sc.display_name_zh, sc.display_name_en, sc.icon_key, sc.sort_order
+		HAVING COUNT(DISTINCT e.gh_repo_id) > 0
+		ORDER BY sc.sort_order ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []model.SourceDescriptor
+	for rows.Next() {
+		var item model.SourceDescriptor
+		if err := rows.Scan(&item.Code, &item.DisplayNameZH, &item.DisplayNameEN, &item.IconKey, &item.SortOrder, &item.Count); err != nil {
+			return nil, err
 		}
 		result = append(result, item)
 	}
@@ -635,14 +646,21 @@ func (s *SQLiteStore) GetProjectByOwnerRepo(owner, repo string) (*model.Project,
 func (s *SQLiteStore) UpsertZreadTrending(z model.ZreadTrending) error { return nil }
 func (s *SQLiteStore) QueryZreadTrending(week string, limit int) ([]model.ZreadTrending, error) {
 	rows, err := s.db.Query(`
-		SELECT z.week_label, z.week_start, z.week_end, z.rank_in_week, z.zread_repo_id,
-		       gr.owner, gr.name, gr.description, z.description_zh, gr.stars, gr.language,
-		       z.wiki_id, gr.gh_repo_id, gr.forks, gr.open_issues, gr.watchers, gr.subscribers,
+		SELECT COALESCE(e.title, ''), COALESCE(json_extract(e.payload_json, '$.week_start'), ''),
+		       COALESCE(json_extract(e.payload_json, '$.week_end'), ''), COALESCE(e.rank, 0),
+		       COALESCE(json_extract(e.payload_json, '$.zread_repo_id'), ''),
+		       gr.owner, gr.name, gr.description, COALESCE(e.summary, ''), gr.stars, gr.language,
+		       COALESCE(json_extract(e.payload_json, '$.wiki_id'), ''), gr.gh_repo_id,
+		       gr.forks, gr.open_issues, gr.watchers, gr.subscribers,
 		       gr.pushed_at, gr.updated_at, gr.created_at, gr.license_spdx, gr.default_branch,
-		       gr.is_archived, gr.is_fork, z.zread_week_start_raw, z.zread_week_end_raw,
-		       z.zread_year_inferred, z.fetched_at
-		FROM zread_events z JOIN github_repos gr ON gr.gh_repo_id=z.gh_repo_id
-		ORDER BY z.week_start DESC, z.rank_in_week ASC LIMIT ?`, limit)
+		       gr.is_archived, gr.is_fork,
+		       COALESCE(json_extract(e.payload_json, '$.zread_week_start_raw'), ''),
+		       COALESCE(json_extract(e.payload_json, '$.zread_week_end_raw'), ''),
+		       COALESCE(json_extract(e.payload_json, '$.zread_year_inferred'), 0), e.updated_at
+		FROM repo_source_events e
+		JOIN github_repos gr ON gr.gh_repo_id=e.gh_repo_id
+		WHERE e.source_code=?
+		ORDER BY e.occurred_at DESC, e.rank ASC LIMIT ?`, model.SourceZread, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -678,10 +696,11 @@ func (s *SQLiteStore) QueryZreadTrending(week string, limit int) ([]model.ZreadT
 func (s *SQLiteStore) LookupZreadWikiID(owner, name string) (string, error) {
 	var wiki sql.NullString
 	err := s.db.QueryRow(`
-		SELECT z.wiki_id
-		FROM zread_events z JOIN github_repos gr ON gr.gh_repo_id=z.gh_repo_id
-		WHERE lower(gr.owner)=lower(?) AND lower(gr.name)=lower(?) AND z.wiki_id IS NOT NULL AND z.wiki_id <> ''
-		ORDER BY z.week_start DESC LIMIT 1`, owner, name).Scan(&wiki)
+		SELECT json_extract(e.payload_json, '$.wiki_id')
+		FROM repo_source_events e JOIN github_repos gr ON gr.gh_repo_id=e.gh_repo_id
+		WHERE e.source_code=? AND lower(gr.owner)=lower(?) AND lower(gr.name)=lower(?)
+		  AND COALESCE(json_extract(e.payload_json, '$.wiki_id'), '') <> ''
+		ORDER BY e.occurred_at DESC, e.id DESC LIMIT 1`, model.SourceZread, owner, name).Scan(&wiki)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -766,6 +785,10 @@ func scanGitHubRepo(scanner rowScanner) (*model.GitHubRepo, error) {
 }
 
 func (s *SQLiteStore) feedItem(repo *model.GitHubRepo) (model.RepoFeedItem, error) {
+	entries, err := s.latestSourceEntries(repo.GhRepoID)
+	if err != nil {
+		return model.RepoFeedItem{}, err
+	}
 	weekly, err := s.weeklySnapshot(repo.GhRepoID)
 	if err != nil {
 		return model.RepoFeedItem{}, err
@@ -778,11 +801,19 @@ func (s *SQLiteStore) feedItem(repo *model.GitHubRepo) (model.RepoFeedItem, erro
 	if err != nil {
 		return model.RepoFeedItem{}, err
 	}
-	return model.NewRepoFeedItem(*repo, weekly, zread, discovery), nil
+	pinPosition, err := s.pinPosition(repo.GhRepoID)
+	if err != nil {
+		return model.RepoFeedItem{}, err
+	}
+	return model.NewRepoFeedItem(*repo, weekly, zread, discovery, entries, pinPosition), nil
 }
 
 func (s *SQLiteStore) weeklySnapshot(repoID int64) (*model.WeeklySnapshot, error) {
-	row := s.db.QueryRow(`SELECT first_issue_number, issue_url, recommendation FROM weekly_extras WHERE gh_repo_id=?`, repoID)
+	row := s.db.QueryRow(`
+		SELECT CAST(json_extract(payload_json, '$.issue_number') AS INTEGER), source_url, summary
+		FROM repo_source_events
+		WHERE gh_repo_id=? AND source_code=?
+		ORDER BY occurred_at DESC, id DESC LIMIT 1`, repoID, model.SourceWeekly)
 	var item model.WeeklySnapshot
 	var rec sql.NullString
 	if err := row.Scan(&item.IssueNumber, &item.IssueURL, &rec); err != nil {
@@ -796,7 +827,12 @@ func (s *SQLiteStore) weeklySnapshot(repoID int64) (*model.WeeklySnapshot, error
 }
 
 func (s *SQLiteStore) zreadSnapshot(repoID int64) (*model.ZreadSnapshot, error) {
-	row := s.db.QueryRow(`SELECT week_start, week_end, week_label, rank_in_week, description_zh FROM zread_events WHERE gh_repo_id=? ORDER BY week_start DESC, id DESC LIMIT 1`, repoID)
+	row := s.db.QueryRow(`
+		SELECT json_extract(payload_json, '$.week_start'), json_extract(payload_json, '$.week_end'),
+		       title, COALESCE(rank, 0), summary
+		FROM repo_source_events
+		WHERE gh_repo_id=? AND source_code=?
+		ORDER BY occurred_at DESC, id DESC LIMIT 1`, repoID, model.SourceZread)
 	var item model.ZreadSnapshot
 	var end, label, desc sql.NullString
 	if err := row.Scan(&item.WeekStart, &end, &label, &item.RankInWeek, &desc); err != nil {
@@ -812,7 +848,13 @@ func (s *SQLiteStore) zreadSnapshot(repoID int64) (*model.ZreadSnapshot, error) 
 }
 
 func (s *SQLiteStore) discoverySnapshot(repoID int64) (*model.DiscoverySnapshot, error) {
-	row := s.db.QueryRow(`SELECT hn_id, title, score, comments, published_at FROM discovery_submissions WHERE gh_repo_id=? ORDER BY published_at DESC, hn_id DESC LIMIT 1`, repoID)
+	row := s.db.QueryRow(`
+		SELECT CAST(json_extract(payload_json, '$.hn_id') AS INTEGER), title,
+		       CAST(json_extract(payload_json, '$.score') AS INTEGER),
+		       CAST(json_extract(payload_json, '$.comments') AS INTEGER), occurred_at
+		FROM repo_source_events
+		WHERE gh_repo_id=? AND source_code=?
+		ORDER BY occurred_at DESC, id DESC LIMIT 1`, repoID, model.SourceDiscovery)
 	var item model.DiscoverySnapshot
 	if err := row.Scan(&item.HNID, &item.Title, &item.Score, &item.Comments, &item.PublishedAt); err != nil {
 		if err == sql.ErrNoRows {
@@ -824,76 +866,30 @@ func (s *SQLiteStore) discoverySnapshot(repoID int64) (*model.DiscoverySnapshot,
 }
 
 func (s *SQLiteStore) sourceEvents(repoID int64) ([]model.SourceEvent, error) {
-	events := make([]model.SourceEvent, 0)
-
 	rows, err := s.db.Query(`
-		SELECT w.first_issue_number, w.issue_url, w.recommendation, i.published_at
-		FROM weekly_extras w JOIN weekly_issues i ON i.number=w.first_issue_number
-		WHERE w.gh_repo_id=?`, repoID)
+		SELECT id, source_code, occurred_at, source_url, title, summary, rank, payload_json
+		FROM repo_source_events WHERE gh_repo_id=?
+		ORDER BY occurred_at DESC, id DESC`, repoID)
 	if err != nil {
 		return nil, err
 	}
-	for rows.Next() {
-		var issue int
-		var url, occurred string
-		var rec sql.NullString
-		if err := rows.Scan(&issue, &url, &rec, &occurred); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		events = append(events, model.SourceEvent{
-			ID: "weekly:" + fmt.Sprint(issue), Source: model.SourceWeekly, OccurredAt: occurred, URL: url,
-			Weekly: &model.WeeklyEventPayload{IssueNumber: issue, Recommendation: rec.String},
-		})
-	}
-	rows.Close()
-
-	rows, err = s.db.Query(`SELECT id, week_start, week_end, rank_in_week, description_zh FROM zread_events WHERE gh_repo_id=?`, repoID)
-	if err != nil {
-		return nil, err
-	}
+	defer rows.Close()
+	events := make([]model.SourceEvent, 0)
 	for rows.Next() {
 		var id int64
-		var weekStart string
-		var weekEnd, desc sql.NullString
-		var rank int
-		if err := rows.Scan(&id, &weekStart, &weekEnd, &rank, &desc); err != nil {
-			rows.Close()
+		entry, payload, err := scanSourceEntry(rows, &id)
+		if err != nil {
 			return nil, err
 		}
-		events = append(events, model.SourceEvent{
-			ID: "zread:" + weekStart, Source: model.SourceZread, OccurredAt: weekStart + "T00:00:00Z",
-			Zread: &model.ZreadEventPayload{WeekStart: weekStart, WeekEnd: weekEnd.String, RankInWeek: rank, DescriptionZh: desc.String},
-		})
-	}
-	rows.Close()
-
-	rows, err = s.db.Query(`SELECT hn_id, title, hn_url, score, comments, published_at FROM discovery_submissions WHERE gh_repo_id=?`, repoID)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var hnID int64
-		var title, url, occurred string
-		var score, comments int
-		if err := rows.Scan(&hnID, &title, &url, &score, &comments, &occurred); err != nil {
-			rows.Close()
-			return nil, err
+		event := model.SourceEvent{
+			ID: fmt.Sprintf("%s:%d", entry.SourceCode, id), Source: entry.SourceCode, SourceCode: entry.SourceCode,
+			OccurredAt: entry.OccurredAt, URL: entry.SourceURL, SourceURL: entry.SourceURL,
+			Title: entry.Title, Summary: entry.Summary, Rank: entry.Rank, Payload: entry.Payload,
 		}
-		events = append(events, model.SourceEvent{
-			ID: "discovery:" + fmt.Sprint(hnID), Source: model.SourceDiscovery, OccurredAt: occurred, URL: url,
-			Discovery: &model.DiscoveryEventPayload{HNID: hnID, Title: title, Score: score, Comments: comments},
-		})
+		applyLegacyEventPayload(&event, payload)
+		events = append(events, event)
 	}
-	rows.Close()
-
-	sort.SliceStable(events, func(i, j int) bool {
-		if events[i].OccurredAt == events[j].OccurredAt {
-			return events[i].ID > events[j].ID
-		}
-		return events[i].OccurredAt > events[j].OccurredAt
-	})
-	return events, nil
+	return events, rows.Err()
 }
 
 func buildRepoWhere(params model.RepoQuery, availableOnly bool) (string, []any) {
@@ -910,23 +906,19 @@ func buildRepoWhere(params model.RepoQuery, availableOnly bool) (string, []any) 
 			args = append(args, params.Language)
 		}
 	}
-	for _, source := range params.Source {
-		switch source {
-		case model.SourceWeekly:
-			clauses = append(clauses, "EXISTS (SELECT 1 FROM weekly_extras w WHERE w.gh_repo_id=gr.gh_repo_id)")
-		case model.SourceZread:
-			clauses = append(clauses, "EXISTS (SELECT 1 FROM zread_events z WHERE z.gh_repo_id=gr.gh_repo_id)")
-		case model.SourceDiscovery:
-			clauses = append(clauses, "EXISTS (SELECT 1 FROM discovery_submissions d WHERE d.gh_repo_id=gr.gh_repo_id)")
-		}
+	for _, sourceCode := range params.Source {
+		clauses = append(clauses, "EXISTS (SELECT 1 FROM repo_source_events e JOIN source_catalog sc ON sc.code=e.source_code WHERE e.gh_repo_id=gr.gh_repo_id AND e.source_code=? AND sc.enabled=1)")
+		args = append(args, sourceCode)
 	}
 	return "WHERE " + strings.Join(clauses, " AND "), args
 }
 
 func hasAnySourceSQL() string {
-	return `(EXISTS (SELECT 1 FROM weekly_extras w WHERE w.gh_repo_id=gr.gh_repo_id)
-		OR EXISTS (SELECT 1 FROM zread_events z WHERE z.gh_repo_id=gr.gh_repo_id)
-		OR EXISTS (SELECT 1 FROM discovery_submissions d WHERE d.gh_repo_id=gr.gh_repo_id))`
+	return `EXISTS (
+		SELECT 1 FROM repo_source_events e
+		JOIN source_catalog sc ON sc.code=e.source_code
+		WHERE e.gh_repo_id=gr.gh_repo_id AND sc.enabled=1
+	)`
 }
 
 func repoOrderBy(sortKey, order string) string {
@@ -949,61 +941,128 @@ func repoOrderBy(sortKey, order string) string {
 }
 
 func recomputeAggregateTx(tx *sql.Tx, repoID int64) error {
-	sourceTypes := make([]string, 0, 3)
-	eventTimes := make([]string, 0)
-	var t string
-	if err := tx.QueryRow(`
-		SELECT i.published_at
-		FROM weekly_extras w JOIN weekly_issues i ON i.number=w.first_issue_number
-		WHERE w.gh_repo_id=?`, repoID).Scan(&t); err == nil {
-		sourceTypes = append(sourceTypes, model.SourceWeekly)
-		eventTimes = append(eventTimes, t)
-	}
-	rows, err := tx.Query(`SELECT week_start || 'T00:00:00Z' FROM zread_events WHERE gh_repo_id=?`, repoID)
+	rows, err := tx.Query(`
+		SELECT DISTINCT e.source_code
+		FROM repo_source_events e
+		JOIN source_catalog sc ON sc.code=e.source_code
+		WHERE e.gh_repo_id=? AND sc.enabled=1
+		ORDER BY sc.sort_order`, repoID)
 	if err != nil {
 		return err
 	}
-	zreadSeen := false
+	var sourceTypes []string
 	for rows.Next() {
-		zreadSeen = true
-		if err := rows.Scan(&t); err != nil {
+		var sourceCode string
+		if err := rows.Scan(&sourceCode); err != nil {
 			rows.Close()
 			return err
 		}
-		eventTimes = append(eventTimes, t)
+		sourceTypes = append(sourceTypes, sourceCode)
 	}
 	rows.Close()
-	if zreadSeen {
-		sourceTypes = append(sourceTypes, model.SourceZread)
-	}
-	rows, err = tx.Query(`SELECT published_at FROM discovery_submissions WHERE gh_repo_id=?`, repoID)
-	if err != nil {
-		return err
-	}
-	discoverySeen := false
-	for rows.Next() {
-		discoverySeen = true
-		if err := rows.Scan(&t); err != nil {
-			rows.Close()
-			return err
-		}
-		eventTimes = append(eventTimes, t)
-	}
-	rows.Close()
-	if discoverySeen {
-		sourceTypes = append(sourceTypes, model.SourceDiscovery)
-	}
-	if len(eventTimes) == 0 {
+	if len(sourceTypes) == 0 {
 		return nil
 	}
-	sort.Strings(eventTimes)
+	var firstEvent, latestEvent string
+	if err := tx.QueryRow(`SELECT MIN(occurred_at), MAX(occurred_at) FROM repo_source_events WHERE gh_repo_id=?`, repoID).Scan(&firstEvent, &latestEvent); err != nil {
+		return err
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err = tx.Exec(`
 		UPDATE github_repos
 		SET source_types_json=?, first_event_at=?, latest_event_at=?, record_updated_at=?
 		WHERE gh_repo_id=?`,
-		model.EncodeStringArray(sourceTypes), eventTimes[0], eventTimes[len(eventTimes)-1], now, repoID)
+		model.EncodeStringArray(sourceTypes), firstEvent, latestEvent, now, repoID)
 	return err
+}
+
+func (s *SQLiteStore) latestSourceEntries(repoID int64) ([]model.SourceEntry, error) {
+	rows, err := s.db.Query(`
+		SELECT e.source_code, e.occurred_at, e.source_url, e.title, e.summary, e.rank, e.payload_json
+		FROM repo_source_events e
+		JOIN source_catalog sc ON sc.code=e.source_code AND sc.enabled=1
+		WHERE e.gh_repo_id=? AND NOT EXISTS (
+			SELECT 1 FROM repo_source_events newer
+			WHERE newer.gh_repo_id=e.gh_repo_id AND newer.source_code=e.source_code
+			  AND (newer.occurred_at > e.occurred_at OR (newer.occurred_at=e.occurred_at AND newer.id > e.id))
+		)
+		ORDER BY sc.sort_order`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var entries []model.SourceEntry
+	for rows.Next() {
+		entry, _, err := scanSourceEntry(rows, nil)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
+}
+
+func scanSourceEntry(scanner rowScanner, id *int64) (model.SourceEntry, map[string]any, error) {
+	var entry model.SourceEntry
+	var sourceURL, title, summary sql.NullString
+	var rank sql.NullInt64
+	var payloadJSON string
+	dest := []any{&entry.SourceCode, &entry.OccurredAt, &sourceURL, &title, &summary, &rank, &payloadJSON}
+	if id != nil {
+		dest = append([]any{id}, dest...)
+	}
+	if err := scanner.Scan(dest...); err != nil {
+		return entry, nil, err
+	}
+	entry.SourceURL = sourceURL.String
+	entry.Title = title.String
+	entry.Summary = summary.String
+	if rank.Valid {
+		value := int(rank.Int64)
+		entry.Rank = &value
+	}
+	payload := make(map[string]any)
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return entry, nil, fmt.Errorf("decode source payload: %w", err)
+	}
+	entry.Payload = payload
+	return entry, payload, nil
+}
+
+func applyLegacyEventPayload(event *model.SourceEvent, payload map[string]any) {
+	switch event.SourceCode {
+	case model.SourceWeekly:
+		event.Weekly = &model.WeeklyEventPayload{IssueNumber: intFromPayload(payload, "issue_number"), Recommendation: event.Summary}
+	case model.SourceZread:
+		rank := 0
+		if event.Rank != nil {
+			rank = *event.Rank
+		}
+		event.Zread = &model.ZreadEventPayload{WeekStart: stringFromPayload(payload, "week_start"), WeekEnd: stringFromPayload(payload, "week_end"), RankInWeek: rank, DescriptionZh: event.Summary}
+	case model.SourceDiscovery:
+		event.Discovery = &model.DiscoveryEventPayload{HNID: int64(intFromPayload(payload, "hn_id")), Title: event.Title, Score: intFromPayload(payload, "score"), Comments: intFromPayload(payload, "comments")}
+	}
+}
+
+func intFromPayload(payload map[string]any, key string) int {
+	value, _ := payload[key].(float64)
+	return int(value)
+}
+
+func stringFromPayload(payload map[string]any, key string) string {
+	value, _ := payload[key].(string)
+	return value
+}
+
+func (s *SQLiteStore) pinPosition(repoID int64) (*int, error) {
+	var position int
+	if err := s.db.QueryRow(`SELECT position FROM weekly_pins WHERE gh_repo_id=?`, repoID).Scan(&position); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &position, nil
 }
 
 func rollback(tx *sql.Tx) {

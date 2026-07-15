@@ -120,13 +120,22 @@ type RepoFeedItem struct {
 	Weekly        *WeeklySnapshot    `json:"weekly"`
 	Zread         *ZreadSnapshot     `json:"zread"`
 	Discovery     *DiscoverySnapshot `json:"discovery"`
+	SourceEntries []SourceEntry      `json:"source_entries"`
+	IsPinned      bool               `json:"is_pinned"`
+	PinPosition   *int               `json:"pin_position,omitempty"`
 }
 
 type SourceEvent struct {
 	ID         string                 `json:"id"`
 	Source     string                 `json:"source"`
+	SourceCode string                 `json:"source_code"`
 	OccurredAt string                 `json:"occurred_at"`
 	URL        string                 `json:"url,omitempty"`
+	SourceURL  string                 `json:"source_url,omitempty"`
+	Title      string                 `json:"title,omitempty"`
+	Summary    string                 `json:"summary,omitempty"`
+	Rank       *int                   `json:"rank,omitempty"`
+	Payload    map[string]any         `json:"payload,omitempty"`
 	Weekly     *WeeklyEventPayload    `json:"weekly,omitempty"`
 	Zread      *ZreadEventPayload     `json:"zread,omitempty"`
 	Discovery  *DiscoveryEventPayload `json:"discovery,omitempty"`
@@ -171,7 +180,7 @@ type LanguageAggregate struct {
 	Count int    `json:"count"`
 }
 
-func NewRepoFeedItem(repo GitHubRepo, weekly *WeeklySnapshot, zread *ZreadSnapshot, discovery *DiscoverySnapshot) RepoFeedItem {
+func NewRepoFeedItem(repo GitHubRepo, weekly *WeeklySnapshot, zread *ZreadSnapshot, discovery *DiscoverySnapshot, entries []SourceEntry, pinPosition *int) RepoFeedItem {
 	return RepoFeedItem{
 		StarcatRepoCardDTO: repo.ToRepoCard(),
 		Name:               repo.Name,
@@ -182,6 +191,9 @@ func NewRepoFeedItem(repo GitHubRepo, weekly *WeeklySnapshot, zread *ZreadSnapsh
 		Weekly:             weekly,
 		Zread:              zread,
 		Discovery:          discovery,
+		SourceEntries:      entries,
+		IsPinned:           pinPosition != nil,
+		PinPosition:        pinPosition,
 	}
 }
 

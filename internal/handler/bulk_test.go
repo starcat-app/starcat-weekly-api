@@ -10,6 +10,7 @@
 //  7. Invalidate 后强制走 store
 //  8. store error → 500
 //  9. languages query 失败 → 500（独立路径）
+//
 // 10. BulkCache TTL 过期 → 强制 fetch（用 Set 后改 builtAt 模拟）
 // 11. NewBulkCache 初始 HasEntry == false
 //
@@ -36,10 +37,17 @@ import (
 type fakeBulkStore struct {
 	repos       []model.RepoFeedItem
 	langs       []model.LanguageAggregate
+	sources     []model.SourceDescriptor
 	reposErr    error
 	langsErr    error
 	reposCalls  int
 	langsCalls  int
+	sourceCalls int
+}
+
+func (f *fakeBulkStore) GetSourceCatalog() ([]model.SourceDescriptor, error) {
+	f.sourceCalls++
+	return f.sources, nil
 }
 
 func (f *fakeBulkStore) QueryAllRepos() ([]model.RepoFeedItem, error) {
@@ -59,7 +67,7 @@ func (f *fakeBulkStore) GetAggregatedLanguages() ([]model.LanguageAggregate, err
 }
 
 // 其余 Store 接口方法不在 bulk 路径上,统一 panic。
-func (f *fakeBulkStore) UpsertGitHubRepo(model.GitHubRepo) error           { panic("not used") }
+func (f *fakeBulkStore) UpsertGitHubRepo(model.GitHubRepo) error { panic("not used") }
 func (f *fakeBulkStore) GetGitHubRepoByOwnerName(string, string) (*model.GitHubRepo, error) {
 	panic("not used")
 }
@@ -73,6 +81,7 @@ func (f *fakeBulkStore) AttachZreadEvent(int64, model.ZreadTrending) error { pan
 func (f *fakeBulkStore) AttachDiscoveryEvent(int64, model.DiscoverySubmission) error {
 	panic("not used")
 }
+func (f *fakeBulkStore) UpsertSourceEvent(int64, model.SourceEventInput) error { panic("not used") }
 func (f *fakeBulkStore) QueryRepos(model.RepoQuery) ([]model.RepoFeedItem, int, error) {
 	panic("not used")
 }
@@ -83,10 +92,10 @@ func (f *fakeBulkStore) UpsertProject(*model.Project) error             { panic(
 func (f *fakeBulkStore) GetProjects(model.QueryParams) ([]model.Project, int, error) {
 	panic("not used")
 }
-func (f *fakeBulkStore) UpsertIssue(*model.WeeklyIssue) error          { panic("not used") }
-func (f *fakeBulkStore) GetIssues() ([]model.WeeklyIssue, error)       { panic("not used") }
-func (f *fakeBulkStore) GetIssue(int) (*model.WeeklyIssue, error)      { panic("not used") }
-func (f *fakeBulkStore) GetLatestIssueNumber() (int, error)            { panic("not used") }
+func (f *fakeBulkStore) UpsertIssue(*model.WeeklyIssue) error     { panic("not used") }
+func (f *fakeBulkStore) GetIssues() ([]model.WeeklyIssue, error)  { panic("not used") }
+func (f *fakeBulkStore) GetIssue(int) (*model.WeeklyIssue, error) { panic("not used") }
+func (f *fakeBulkStore) GetLatestIssueNumber() (int, error)       { panic("not used") }
 func (f *fakeBulkStore) GetUnenrichedProjects(int) ([]model.Project, error) {
 	panic("not used")
 }
@@ -128,7 +137,7 @@ func (f *fakeBulkStore) GetDiscoveryByOwnerRepo(string, string) (*model.Discover
 	panic("not used")
 }
 func (f *fakeBulkStore) GetAggregatedLanguagesFAKE() {} // marker (gosimple no-op，just保编辑器满意)
-func (f *fakeBulkStore) Close() error                  { return nil }
+func (f *fakeBulkStore) Close() error                { return nil }
 
 // makeBulkRepo 构造一条 minimal RepoFeedItem 用于 fake store 注入。
 func makeBulkRepo(id int64, fullName, lang string) model.RepoFeedItem {
@@ -166,8 +175,9 @@ func doBulkReq(s *fakeBulkStore, c *BulkCache, headers http.Header) *httptest.Re
 // data.languages + meta.total 字段全部正确填充。
 func TestBulk_ReturnsEnvelope(t *testing.T) {
 	f := &fakeBulkStore{
-		repos: []model.RepoFeedItem{makeBulkRepo(1, "r1", "Go"), makeBulkRepo(2, "r2", "Rust")},
-		langs: []model.LanguageAggregate{{Key: "Go", Label: "Go", Count: 1}, {Key: "Rust", Label: "Rust", Count: 1}},
+		repos:   []model.RepoFeedItem{makeBulkRepo(1, "r1", "Go"), makeBulkRepo(2, "r2", "Rust")},
+		langs:   []model.LanguageAggregate{{Key: "Go", Label: "Go", Count: 1}, {Key: "Rust", Label: "Rust", Count: 1}},
+		sources: []model.SourceDescriptor{{Code: model.SourceWeekly, DisplayNameZH: "阮一峰周刊", DisplayNameEN: "Weekly", IconKey: "ruanyf", SortOrder: 10, Count: 2}},
 	}
 	w := doBulkReq(f, NewBulkCache(), nil)
 
@@ -178,8 +188,11 @@ func TestBulk_ReturnsEnvelope(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
 		t.Fatalf("decode envelope: %v body=%s", err, w.Body.String())
 	}
-	if env.SchemaVersion != 1 {
-		t.Errorf("schema_version=%d, want 1", env.SchemaVersion)
+	if env.SchemaVersion != 2 {
+		t.Errorf("schema_version=%d, want 2", env.SchemaVersion)
+	}
+	if len(env.Data.Sources) != 1 || env.Data.Sources[0].Count != 2 {
+		t.Errorf("sources=%#v", env.Data.Sources)
 	}
 	if len(env.Data.Repos) != 2 {
 		t.Errorf("repos len=%d, want 2", len(env.Data.Repos))

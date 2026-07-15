@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dong4j/starcat-weekly-api/internal/model"
+	"github.com/dong4j/starcat-weekly-api/internal/source"
 	"github.com/dong4j/starcat-weekly-api/internal/store"
 )
 
@@ -129,11 +130,9 @@ func parseRepoQuery(w http.ResponseWriter, r *http.Request) (model.RepoQuery, bo
 	}
 
 	sources := splitSources(q.Get("source"))
-	for _, source := range sources {
-		switch source {
-		case model.SourceWeekly, model.SourceZread, model.SourceDiscovery:
-		default:
-			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid source", map[string]string{"source": source})
+	for _, sourceCode := range sources {
+		if _, ok := source.Find(sourceCode); !ok {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid source", map[string]string{"source": sourceCode})
 			return model.RepoQuery{}, false
 		}
 	}

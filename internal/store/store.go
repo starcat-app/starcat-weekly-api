@@ -17,6 +17,7 @@ type Store interface {
 	AttachWeeklyEvent(repoID int64, project model.Project, issue model.WeeklyIssue) error
 	AttachZreadEvent(repoID int64, event model.ZreadTrending) error
 	AttachDiscoveryEvent(repoID int64, submission model.DiscoverySubmission) error
+	UpsertSourceEvent(repoID int64, event model.SourceEventInput) error
 	QueryRepos(params model.RepoQuery) ([]model.RepoFeedItem, int, error)
 	// QueryAllRepos 返回当前可用的**全部** repos（不分页、不过滤 source/lang/sort）。
 	//
@@ -26,6 +27,7 @@ type Store interface {
 	QueryAllRepos() ([]model.RepoFeedItem, error)
 	GetRepoDetail(repoID int64) (*model.RepoDetail, error)
 	GetAggregatedLanguages() ([]model.LanguageAggregate, error)
+	GetSourceCatalog() ([]model.SourceDescriptor, error)
 	RebuildAggregates() error
 	GetAllSourceRepos() []string
 
