@@ -13,9 +13,12 @@ primary_region = 'nrt'
   PORT = '5003'
   # 以下变量建议通过 fly secrets set 配置以保持各项目一致性:
   # API_KEYS="sk-starcat-..."
+  # ADMIN_API_KEYS="sk-starcat-admin-..."
   # GITHUB_TOKENS="ghp_...,ghp_..."
   # STORE_FILE="/data/weekly.db"
   # REPO_DIR="/data/weekly-repo"
+  # HELLOGITHUB_CRON="31 6 * * *"
+  # HELLOGITHUB_RECONCILE_CRON="29 7 29 * *"
 
 [processes]
   app = './server'

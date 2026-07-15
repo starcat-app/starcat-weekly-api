@@ -83,6 +83,15 @@ Starcat Weekly 后端服务 —— 解析[阮一峰周刊](https://github.com/ru
 - `discovery_repos` 与 `discovery_submissions` 分表，保留同一仓库的多次 Show HN 投稿。
 - LLM 未配置时 collect/enrich 继续工作，分类队列保持 pending，配置后自动消费。
 
+## Weekly 多来源采集
+
+- `weekly / zread / discovery / hellogithub / ai_intelligence` 统一写入通用来源事件，`GET /api/v1/repos/bulk` 使用 schema v2 返回动态来源目录、通用来源条目和置顶顺序。
+- Collector 与人工录入只在 SQLite transaction 中写入 batch/items；commit 后唤醒后台 Worker，由 Worker 在事务外调用 GitHub API。
+- Worker 启动时扫描一次，收到内存信号立即处理，并每 15 分钟兜底扫描；瞬时失败按 15/30 分钟退避，最多尝试 3 次后剔除。
+- HelloGitHub 支持 featured 增量、月刊对账与可恢复的历史 volume 回填；回填 checkpoint 保存在数据库中。
+- `POST /internal/imports` 只允许 `manual_import_enabled=true` 的固定来源，首期仅允许 `ai_intelligence`。
+- Weekly 支持多个全局置顶项目，管理端以完整 `gh_repo_ids` 列表原子替换顺序。
+
 ## 快速开始
 
 ### 本地开发
@@ -136,10 +145,12 @@ fly deploy
 | `STORE_FILE` | SQLite 数据库路径 |
 | `REPO_DIR` | 周刊 git clone 存放路径 |
 | `API_KEYS` | 逗号分隔的 API Key 白名单（用于 Bearer 鉴权） |
-| `ADMIN_API_KEYS` | Discovery 手动同步专用管理员 Key；不得随客户端分发 |
+| `ADMIN_API_KEYS` | 来源同步、批量录入和置顶管理专用管理员 Key；不得随客户端分发 |
 | `GITHUB_TOKENS` | 逗号分隔的 GitHub PAT 池 |
-| `LLM_API_BASE` / `LLM_API_KEY` / `LLM_MODEL` | OpenAI-compatible 分类服务；Key 为空时暂停分类 |
 | `DISCOVERY_CRON` | Discovery cron，默认每小时第 17 分 |
+| `HELLOGITHUB_CRON` | HelloGitHub featured 增量 cron，默认每天 06:31 UTC |
+| `HELLOGITHUB_RECONCILE_CRON` | HelloGitHub 月刊对账 cron，默认每月 29 日 07:29 UTC |
+| `HELLOGITHUB_FEATURED_MAX_PAGES` | featured 增量最大分页数，默认 3 |
 
 ## API (v1)
 
@@ -173,6 +184,55 @@ GET /api/v1/issues/{number}
 
 ```
 POST /internal/sync/weekly
+```
+
+### 多来源管理接口 (Admin)
+
+所有接口使用 `Authorization: Bearer <ADMIN_API_KEY>`：
+
+```text
+GET  /internal/sources?manual_import=true
+POST /internal/sources/hellogithub/sync
+GET  /internal/ingest-batches/{batch_id}
+POST /internal/imports
+GET  /internal/imports/{batch_id}
+GET  /internal/repos/search?q=owner/repo&limit=20
+GET  /internal/pins
+POST /internal/pins
+```
+
+AI 情报批量录入示例；接口先持久化并返回 `202 Accepted`，GitHub enrich 异步执行：
+
+```json
+{
+  "source_code": "ai_intelligence",
+  "idempotency_key": "news-20260716-001",
+  "repositories": [
+    {
+      "owner": "acme",
+      "repo": "agent",
+      "title": "AI Agent",
+      "source_url": "https://example.com/news"
+    }
+  ]
+}
+```
+
+HelloGitHub 历史回填请求：
+
+```json
+{
+  "mode": "backfill",
+  "from_volume": 1,
+  "to_volume": null,
+  "idempotency_key": "hellogithub-history-v1"
+}
+```
+
+置顶接口接收完整有序列表，空数组表示清空：
+
+```json
+{ "gh_repo_ids": [123, 456, 789] }
 ```
 
 ### zread 周 trending（v0.5 新增）
