@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -78,8 +79,12 @@ func (s *Service) Enqueue(request model.EnqueueBatchRequest) (model.IngestBatchA
 	for index, candidate := range request.Candidates {
 		candidate.Owner = strings.TrimSpace(candidate.Owner)
 		candidate.Repo = strings.TrimSpace(candidate.Repo)
+		candidate.SourceURL = strings.TrimSpace(candidate.SourceURL)
 		if !ownerPattern.MatchString(candidate.Owner) || !repoPattern.MatchString(candidate.Repo) {
 			return model.IngestBatchAcceptance{}, validationErrorf("invalid repository at index %d: %s/%s", index, candidate.Owner, candidate.Repo)
+		}
+		if candidate.SourceURL != "" && !isSafeSourceURL(candidate.SourceURL) {
+			return model.IngestBatchAcceptance{}, validationErrorf("invalid source_url at index %d: only absolute http/https URLs are allowed", index)
 		}
 		normalized := strings.ToLower(candidate.Owner + "/" + candidate.Repo)
 		if candidate.OccurredAt.IsZero() {
@@ -113,6 +118,17 @@ func (s *Service) Enqueue(request model.EnqueueBatchRequest) (model.IngestBatchA
 		BatchID: result.Batch.ID, SourceCode: result.Batch.SourceCode, Status: result.Batch.Status,
 		Total: result.Batch.Total, DuplicateCount: duplicateCount, CreatedAt: result.Batch.CreatedAt,
 	}, nil
+}
+
+// isSafeSourceURL 限制最终会暴露给客户端点击的来源链接。
+// 不能只依赖客户端 URL 类型解码，否则人工文本可把 javascript/file 等 scheme
+// 持久化为公开来源事件；Collector 同样走此边界，保持所有入口一致。
+func isSafeSourceURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || parsed.User != nil {
+		return false
+	}
+	return parsed.Scheme == "http" || parsed.Scheme == "https"
 }
 
 func newUUID() (string, error) {

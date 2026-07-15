@@ -76,6 +76,19 @@ func TestEnqueueRejectsCrawlerOnlySourceForManualImport(t *testing.T) {
 	}
 }
 
+func TestEnqueueRejectsUnsafeSourceURL(t *testing.T) {
+	service := NewService(errorBatchRepository{}, NewWakeSignal())
+	for _, sourceURL := range []string{"javascript:alert(1)", "file:///tmp/news", "/relative/news", "https://user:secret@example.com/news"} {
+		_, err := service.Enqueue(model.EnqueueBatchRequest{
+			SourceCode: model.SourceAIIntelligence, Kind: model.IngestKindManualImport,
+			IdempotencyKey: "unsafe-url", Candidates: []model.IngestCandidate{{Owner: "acme", Repo: "agent", SourceURL: sourceURL}},
+		})
+		if err == nil {
+			t.Fatalf("source_url %q must be rejected", sourceURL)
+		}
+	}
+}
+
 func TestEnqueueStoreFailureDoesNotWake(t *testing.T) {
 	wake := NewWakeSignal()
 	service := NewService(errorBatchRepository{err: errors.New("commit failed")}, wake)
