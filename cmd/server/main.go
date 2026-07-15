@@ -129,6 +129,7 @@ func main() {
 	rh := handler.NewReposHandlerWithBulkCache(s, bulkCache)
 	dh := handler.NewDiscoveryHandler(s, sch.SyncDiscovery)
 	ih := handler.NewImportsHandler(ingestService, s)
+	ph := handler.NewPinsHandler(s, bulkCache)
 
 	// Register routes (Go 1.22+ style)
 	// 注意：authMW.Wrap 接受 http.Handler。把 method value (func(w,r)) 显式包装为
@@ -159,6 +160,9 @@ func main() {
 	mux.Handle("POST /internal/imports", adminAuthMW.Wrap(http.HandlerFunc(ih.HandleCreate)))
 	mux.Handle("GET /internal/imports/{batch_id}", adminAuthMW.Wrap(http.HandlerFunc(ih.HandleBatch)))
 	mux.Handle("GET /internal/ingest-batches/{batch_id}", adminAuthMW.Wrap(http.HandlerFunc(ih.HandleBatch)))
+	mux.Handle("GET /internal/repos/search", adminAuthMW.Wrap(http.HandlerFunc(ph.HandleSearch)))
+	mux.Handle("GET /internal/pins", adminAuthMW.Wrap(http.HandlerFunc(ph.HandleList)))
+	mux.Handle("POST /internal/pins", adminAuthMW.Wrap(http.HandlerFunc(ph.HandleReplace)))
 
 	// Start scheduler (initial sync + cron)
 	go sch.Start()
@@ -190,6 +194,8 @@ func main() {
 	log.Printf("  GET  /internal/sources           - List fixed sources and ingest status")
 	log.Printf("  POST /internal/imports           - Enqueue a manual repository batch")
 	log.Printf("  GET  /internal/imports/{id}      - Inspect ingest batch status")
+	log.Printf("  GET  /internal/repos/search      - Search repos for pinning")
+	log.Printf("  GET/POST /internal/pins          - Read or replace ordered Weekly pins")
 	handler := middleware.CORS(mux)
 	log.Fatal(http.ListenAndServe(":"+port, handler))
 }

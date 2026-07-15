@@ -373,7 +373,7 @@ func (s *SQLiteStore) QueryRepos(params model.RepoQuery) ([]model.RepoFeedItem, 
 //   - feedItem 按 repo 拼通用来源代表事件、兼容快照和置顶状态；bulk cache 会吸收
 //     这条全量查询的成本，后续可在性能审查中再合并为单条聚合 SQL
 func (s *SQLiteStore) QueryAllRepos() ([]model.RepoFeedItem, error) {
-	rows, err := s.db.Query(`SELECT ` + githubRepoColumns() + ` FROM github_repos gr WHERE gr.is_available=1 AND ` + hasAnySourceSQL() + ` ORDER BY gr.latest_event_at DESC, gr.gh_repo_id DESC`)
+	rows, err := s.db.Query(`SELECT ` + githubRepoColumns() + ` FROM github_repos gr WHERE gr.is_available=1 AND ` + hasAnySourceSQL() + ` ` + repoOrderBy("latest_event_at", "desc"))
 	if err != nil {
 		return nil, err
 	}
@@ -824,7 +824,7 @@ func (s *SQLiteStore) weeklySnapshot(repoID int64) (*model.WeeklySnapshot, error
 	row := s.db.QueryRow(`
 		SELECT CAST(json_extract(payload_json, '$.issue_number') AS INTEGER), source_url, summary
 		FROM repo_source_events
-		WHERE gh_repo_id=? AND source_code=?
+		WHERE gh_repo_id=? AND source_code=? AND json_extract(payload_json, '$.issue_number') IS NOT NULL
 		ORDER BY occurred_at DESC, id DESC LIMIT 1`, repoID, model.SourceWeekly)
 	var item model.WeeklySnapshot
 	var rec sql.NullString
@@ -843,7 +843,7 @@ func (s *SQLiteStore) zreadSnapshot(repoID int64) (*model.ZreadSnapshot, error) 
 		SELECT json_extract(payload_json, '$.week_start'), json_extract(payload_json, '$.week_end'),
 		       title, COALESCE(rank, 0), summary
 		FROM repo_source_events
-		WHERE gh_repo_id=? AND source_code=?
+		WHERE gh_repo_id=? AND source_code=? AND json_extract(payload_json, '$.week_start') IS NOT NULL
 		ORDER BY occurred_at DESC, id DESC LIMIT 1`, repoID, model.SourceZread)
 	var item model.ZreadSnapshot
 	var end, label, desc sql.NullString
@@ -865,7 +865,7 @@ func (s *SQLiteStore) discoverySnapshot(repoID int64) (*model.DiscoverySnapshot,
 		       CAST(json_extract(payload_json, '$.score') AS INTEGER),
 		       CAST(json_extract(payload_json, '$.comments') AS INTEGER), occurred_at
 		FROM repo_source_events
-		WHERE gh_repo_id=? AND source_code=?
+		WHERE gh_repo_id=? AND source_code=? AND json_extract(payload_json, '$.hn_id') IS NOT NULL
 		ORDER BY occurred_at DESC, id DESC LIMIT 1`, repoID, model.SourceDiscovery)
 	var item model.DiscoverySnapshot
 	if err := row.Scan(&item.HNID, &item.Title, &item.Score, &item.Comments, &item.PublishedAt); err != nil {
@@ -938,17 +938,20 @@ func repoOrderBy(sortKey, order string) string {
 	if strings.EqualFold(order, "asc") {
 		dir = "ASC"
 	}
+	pinPrefix := `ORDER BY
+		CASE WHEN EXISTS (SELECT 1 FROM weekly_pins p WHERE p.gh_repo_id=gr.gh_repo_id) THEN 0 ELSE 1 END ASC,
+		COALESCE((SELECT p.position FROM weekly_pins p WHERE p.gh_repo_id=gr.gh_repo_id), 2147483647) ASC, `
 	switch sortKey {
 	case "stars":
-		return "ORDER BY gr.stars " + dir + ", gr.gh_repo_id DESC"
+		return pinPrefix + "gr.stars " + dir + ", gr.gh_repo_id DESC"
 	case "updated_at":
-		return "ORDER BY gr.updated_at " + dir + ", gr.gh_repo_id DESC"
+		return pinPrefix + "gr.updated_at " + dir + ", gr.gh_repo_id DESC"
 	case "created_at":
-		return "ORDER BY gr.created_at " + dir + ", gr.gh_repo_id DESC"
+		return pinPrefix + "gr.created_at " + dir + ", gr.gh_repo_id DESC"
 	case "name":
-		return "ORDER BY LOWER(gr.full_name) " + dir + ", gr.gh_repo_id DESC"
+		return pinPrefix + "LOWER(gr.full_name) " + dir + ", gr.gh_repo_id DESC"
 	default:
-		return "ORDER BY gr.latest_event_at " + dir + ", gr.gh_repo_id DESC"
+		return pinPrefix + "gr.latest_event_at " + dir + ", gr.gh_repo_id DESC"
 	}
 }
 
