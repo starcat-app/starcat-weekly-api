@@ -67,7 +67,7 @@ func main() {
 	adminKeys := splitNonEmpty(os.Getenv("ADMIN_API_KEYS"))
 	adminAuthMW := middleware.NewBearerAuth(adminKeys)
 	if len(adminKeys) == 0 {
-		log.Println("[auth] ADMIN_API_KEYS not configured; admin discovery sync is disabled")
+		log.Println("[auth] ADMIN_API_KEYS not configured; source sync, imports, batch status, and pins are disabled")
 	}
 
 	// GitHub Token Pool（兼容旧 GITHUB_TOKEN 单值环境变量）

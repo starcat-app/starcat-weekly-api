@@ -6,8 +6,9 @@
 // 响应形式（schema_version=2）:
 //
 //	{
-//	  "schema_version": 1,
+//	  "schema_version": 2,
 //	  "data": {
+//	    "sources":   [<SourceDescriptor>...],  // 动态来源目录 + count
 //	    "repos":     [<RepoFeedItem>...],     // ~4000 条全量
 //	    "languages": [<LanguageAggregate>...] // 聚合后语言列表
 //	  },

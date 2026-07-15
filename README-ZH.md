@@ -76,12 +76,11 @@ Starcat Weekly 后端服务 —— 解析[阮一峰周刊](https://github.com/ru
 
 ## v0.6 AI Discovery（Show HN）
 
-- `GET /api/v1/discovery`：24 小时内已完成 AI 分类的仓库列表。
-- `GET /api/v1/discovery/{owner}/{repo}`：单仓库 Discovery 详情。
+- Show HN 作为固定 `discovery` 来源进入 `GET /api/v1/repos` 与 bulk，不再保留独立公开端点。
 - `POST /internal/sync/discovery`：管理员手动触发同步，使用独立 `ADMIN_API_KEYS`。
 - 数据源使用 Hacker News 官方 Firebase API，不解析 HTML、不依赖 Algolia。
-- `discovery_repos` 与 `discovery_submissions` 分表，保留同一仓库的多次 Show HN 投稿。
-- LLM 未配置时 collect/enrich 继续工作，分类队列保持 pending，配置后自动消费。
+- Collector 把同一仓库的多次 Show HN 投稿作为通用来源事件入队，GitHub enrich 由统一 Worker 异步处理。
+- 当前流水线不调用 LLM；旧 Discovery 专属表只作为 migration 回滚证据，不再双写。
 
 ## Weekly 多来源采集
 
