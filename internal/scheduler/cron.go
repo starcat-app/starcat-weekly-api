@@ -26,18 +26,19 @@ import (
 
 // Scheduler 同步调度器
 type Scheduler struct {
-	store         store.Store
-	enqueuer      ingestEnqueuer
-	wikiNotifier  *notifier.WikiNotifier
-	discovery     discoveryRunner
-	helloGitHub   helloGitHubRunner
-	discoveryCron string
-	helloCron     string
-	zreadCron     string
-	repoDir       string
-	cron          *cron.Cron
-	funcMu        sync.Mutex
-	running       map[string]bool // 防止并发跑同一任务（funcName 锁）
+	store              store.Store
+	enqueuer           ingestEnqueuer
+	wikiNotifier       *notifier.WikiNotifier
+	discovery          discoveryRunner
+	helloGitHub        helloGitHubRunner
+	discoveryCron      string
+	helloCron          string
+	helloReconcileCron string
+	zreadCron          string
+	repoDir            string
+	cron               *cron.Cron
+	funcMu             sync.Mutex
+	running            map[string]bool // 防止并发跑同一任务（funcName 锁）
 }
 
 type ingestEnqueuer interface {
@@ -50,12 +51,13 @@ type discoveryRunner interface {
 
 type helloGitHubRunner interface {
 	RunFeatured(context.Context) (weeklysource.HelloGitHubRunStats, error)
+	ReconcileLatest(context.Context) (weeklysource.HelloGitHubReconcileStats, error)
 }
 
 // New 创建调度器。
 //
 // GitHub enrich 完成后的 bulk cache 失效由统一 Worker 负责；Collector 入队时不能提前失效。
-func New(s store.Store, enqueuer ingestEnqueuer, wn *notifier.WikiNotifier, repoDir string, discoveryService discoveryRunner, helloGitHubService helloGitHubRunner, discoveryCron string, helloCron string, zreadCron string) *Scheduler {
+func New(s store.Store, enqueuer ingestEnqueuer, wn *notifier.WikiNotifier, repoDir string, discoveryService discoveryRunner, helloGitHubService helloGitHubRunner, discoveryCron string, helloCron string, helloReconcileCron string, zreadCron string) *Scheduler {
 	if discoveryCron == "" {
 		discoveryCron = "17 * * * *"
 	}
@@ -65,18 +67,22 @@ func New(s store.Store, enqueuer ingestEnqueuer, wn *notifier.WikiNotifier, repo
 	if helloCron == "" {
 		helloCron = "31 6 * * *"
 	}
+	if helloReconcileCron == "" {
+		helloReconcileCron = "29 7 29 * *"
+	}
 	return &Scheduler{
-		store:         s,
-		enqueuer:      enqueuer,
-		wikiNotifier:  wn,
-		repoDir:       repoDir,
-		discovery:     discoveryService,
-		helloGitHub:   helloGitHubService,
-		discoveryCron: discoveryCron,
-		helloCron:     helloCron,
-		zreadCron:     zreadCron,
-		cron:          cron.New(),
-		running:       make(map[string]bool),
+		store:              s,
+		enqueuer:           enqueuer,
+		wikiNotifier:       wn,
+		repoDir:            repoDir,
+		discovery:          discoveryService,
+		helloGitHub:        helloGitHubService,
+		discoveryCron:      discoveryCron,
+		helloCron:          helloCron,
+		helloReconcileCron: helloReconcileCron,
+		zreadCron:          zreadCron,
+		cron:               cron.New(),
+		running:            make(map[string]bool),
 	}
 }
 
@@ -114,6 +120,10 @@ func (s *Scheduler) Start() {
 		_, err = s.cron.AddFunc(s.helloCron, s.runHelloGitHub)
 		if err != nil {
 			log.Printf("[scheduler] cron add (hellogithub): %v", err)
+		}
+		_, err = s.cron.AddFunc(s.helloReconcileCron, s.runHelloGitHubReconcile)
+		if err != nil {
+			log.Printf("[scheduler] cron add (hellogithub reconcile): %v", err)
 		}
 	}
 
@@ -235,6 +245,28 @@ func (s *Scheduler) runHelloGitHub() {
 // SyncHelloGitHub 异步触发 HelloGitHub 精选增量同步，供 Admin endpoint 复用。
 func (s *Scheduler) SyncHelloGitHub() {
 	go s.runHelloGitHub()
+}
+
+func (s *Scheduler) runHelloGitHubReconcile() {
+	if s.helloGitHub == nil {
+		return
+	}
+	if !s.tryLock("hellogithub") {
+		log.Println("[scheduler] hellogithub reconcile 已有任务运行，跳过本次")
+		return
+	}
+	defer s.unlock("hellogithub")
+	stats, err := s.helloGitHub.ReconcileLatest(context.Background())
+	if err != nil {
+		log.Printf("[scheduler] hellogithub reconcile: %v", err)
+		return
+	}
+	log.Printf("[scheduler] hellogithub reconcile 完成: volume=%d fetched=%d queued=%d batch=%s", stats.Volume, stats.Fetched, stats.Queued, stats.BatchID)
+}
+
+// ReconcileHelloGitHub 异步触发最新月刊对账，供管理接口复用。
+func (s *Scheduler) ReconcileHelloGitHub() {
+	go s.runHelloGitHubReconcile()
 }
 
 // tryLock 检查并标记任务运行中。返回 false 表示已有同名任务在跑。

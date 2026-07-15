@@ -11,7 +11,7 @@ import (
 
 func TestHelloGitHubAdminSyncReturnsAccepted(t *testing.T) {
 	called := false
-	handler := NewHelloGitHubHandler(func() { called = true }, nil)
+	handler := NewHelloGitHubHandler(func() { called = true }, nil, nil)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/internal/sources/hellogithub/sync", nil)
 	request.SetPathValue("source_code", model.SourceHelloGitHub)
@@ -33,7 +33,7 @@ func (s *helloGitHubBackfillStarterStub) Start(fromVolume, toVolume int, _ strin
 
 func TestHelloGitHubAdminSyncStartsPersistentBackfill(t *testing.T) {
 	starter := &helloGitHubBackfillStarterStub{}
-	handler := NewHelloGitHubHandler(func() {}, starter)
+	handler := NewHelloGitHubHandler(func() {}, nil, starter)
 	request := httptest.NewRequest(http.MethodPost, "/internal/sources/hellogithub/sync",
 		bytes.NewBufferString(`{"mode":"backfill","from_volume":2,"to_volume":5}`))
 	request.SetPathValue("source_code", model.SourceHelloGitHub)

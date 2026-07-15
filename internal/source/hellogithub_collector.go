@@ -27,6 +27,14 @@ type HelloGitHubRunStats struct {
 	Exhausted bool     `json:"exhausted"`
 }
 
+// HelloGitHubReconcileStats 描述最新月刊对账创建的持久化批次。
+type HelloGitHubReconcileStats struct {
+	Volume  int    `json:"volume"`
+	Fetched int    `json:"fetched"`
+	Queued  int    `json:"queued"`
+	BatchID string `json:"batch_id,omitempty"`
+}
+
 // HelloGitHubCollector 把精选列表转换成持久化批次。
 // 每页单独提交，避免后续页失败时丢掉已经成功抓取的前序页面。
 type HelloGitHubCollector struct {
@@ -78,6 +86,38 @@ func (c *HelloGitHubCollector) RunFeatured(ctx context.Context) (HelloGitHubRunS
 		stats.BatchIDs = append(stats.BatchIDs, acceptance.BatchID)
 	}
 	return stats, nil
+}
+
+// ReconcileLatest 先从任一期结构化响应探测最新期号，再把最新月刊作为普通采集批次入队。
+// 月刊 external_key 与历史回填一致，因此同一来源事实最终只保留一条。
+func (c *HelloGitHubCollector) ReconcileLatest(ctx context.Context) (HelloGitHubReconcileStats, error) {
+	volumeFetcher, ok := c.fetcher.(helloGitHubVolumeFetcher)
+	if !ok {
+		return HelloGitHubReconcileStats{}, fmt.Errorf("HelloGitHub fetcher does not support periodical volumes")
+	}
+	probe, err := volumeFetcher.FetchVolume(ctx, 1)
+	if err != nil {
+		return HelloGitHubReconcileStats{}, err
+	}
+	latest := probe
+	if probe.Latest != probe.Number {
+		latest, err = volumeFetcher.FetchVolume(ctx, probe.Latest)
+		if err != nil {
+			return HelloGitHubReconcileStats{}, err
+		}
+	}
+	acceptance, err := c.enqueuer.Enqueue(model.EnqueueBatchRequest{
+		SourceCode: model.SourceHelloGitHub,
+		Kind:       model.IngestKindCollector,
+		IdempotencyKey: fmt.Sprintf("hellogithub:reconcile:%d:%s", latest.Number,
+			candidateFingerprint(latest.Candidates)),
+		Cursor:     map[string]any{"volume": latest.Number, "reconcile": true},
+		Candidates: latest.Candidates,
+	})
+	if err != nil {
+		return HelloGitHubReconcileStats{}, err
+	}
+	return HelloGitHubReconcileStats{Volume: latest.Number, Fetched: len(latest.Candidates), Queued: acceptance.Total, BatchID: acceptance.BatchID}, nil
 }
 
 func candidateFingerprint(candidates []model.IngestCandidate) string {

@@ -9,8 +9,13 @@ import (
 )
 
 type helloGitHubFetcherStub struct {
-	pages map[int][]model.IngestCandidate
-	calls []int
+	pages   map[int][]model.IngestCandidate
+	calls   []int
+	volumes map[int]HelloGitHubVolume
+}
+
+func (s *helloGitHubFetcherStub) FetchVolume(_ context.Context, number int) (HelloGitHubVolume, error) {
+	return s.volumes[number], nil
 }
 
 func (s *helloGitHubFetcherStub) FetchFeaturedPage(_ context.Context, page int) ([]model.IngestCandidate, error) {
@@ -57,5 +62,25 @@ func TestHelloGitHubCollectorFingerprintIsStable(t *testing.T) {
 	second := candidateFingerprint(candidates)
 	if first != second || len(first) != 16 {
 		t.Fatalf("fingerprints=%q/%q", first, second)
+	}
+}
+
+func TestHelloGitHubCollectorReconcilesDetectedLatestVolume(t *testing.T) {
+	latestCandidate := model.IngestCandidate{Owner: "latest", Repo: "repo", ExternalKey: "volume:123:latest/repo"}
+	fetcher := &helloGitHubFetcherStub{volumes: map[int]HelloGitHubVolume{
+		1:   {Number: 1, Latest: 123, Candidates: []model.IngestCandidate{{Owner: "old", Repo: "repo"}}},
+		123: {Number: 123, Latest: 123, Candidates: []model.IngestCandidate{latestCandidate}},
+	}}
+	enqueuer := &helloGitHubEnqueuerStub{}
+	collector := NewHelloGitHubCollector(fetcher, enqueuer, 3)
+	stats, err := collector.ReconcileLatest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Volume != 123 || stats.Queued != 1 || len(enqueuer.requests) != 1 {
+		t.Fatalf("stats=%+v requests=%+v", stats, enqueuer.requests)
+	}
+	if got := enqueuer.requests[0].Candidates[0].Owner; got != "latest" {
+		t.Fatalf("queued owner=%s", got)
 	}
 }

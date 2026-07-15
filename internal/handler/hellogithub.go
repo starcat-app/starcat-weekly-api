@@ -12,8 +12,9 @@ import (
 
 // HelloGitHubHandler 暴露精选增量同步入口；具体抓取在 scheduler goroutine 中执行。
 type HelloGitHubHandler struct {
-	sync     func()
-	backfill helloGitHubBackfillStarter
+	sync      func()
+	reconcile func()
+	backfill  helloGitHubBackfillStarter
 }
 
 type helloGitHubBackfillStarter interface {
@@ -27,8 +28,8 @@ type helloGitHubSyncRequest struct {
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
-func NewHelloGitHubHandler(syncFn func(), backfill helloGitHubBackfillStarter) *HelloGitHubHandler {
-	return &HelloGitHubHandler{sync: syncFn, backfill: backfill}
+func NewHelloGitHubHandler(syncFn func(), reconcileFn func(), backfill helloGitHubBackfillStarter) *HelloGitHubHandler {
+	return &HelloGitHubHandler{sync: syncFn, reconcile: reconcileFn, backfill: backfill}
 }
 
 // HandleSourceSync POST /internal/sources/{source_code}/sync。
@@ -80,7 +81,14 @@ func (h *HelloGitHubHandler) HandleSourceSync(w http.ResponseWriter, r *http.Req
 			return
 		}
 		writeJSONStatus(w, http.StatusAccepted, acceptance)
+	case "reconcile":
+		if h.reconcile == nil {
+			writeError(w, http.StatusServiceUnavailable, "RECONCILE_UNAVAILABLE", "HelloGitHub reconcile is unavailable", nil)
+			return
+		}
+		h.reconcile()
+		writeJSONStatus(w, http.StatusAccepted, map[string]string{"status": "running"})
 	default:
-		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "mode must be incremental, featured, or backfill", nil)
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "mode must be incremental, featured, reconcile, or backfill", nil)
 	}
 }

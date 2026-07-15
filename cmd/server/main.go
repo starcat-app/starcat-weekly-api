@@ -119,13 +119,14 @@ func main() {
 	sch := scheduler.New(s, ingestService, wikiNotifier, repoDir, discoveryCollector, helloGitHubCollector,
 		envOrDefault("DISCOVERY_CRON", "17 * * * *"),
 		envOrDefault("HELLOGITHUB_CRON", "31 6 * * *"),
+		envOrDefault("HELLOGITHUB_RECONCILE_CRON", "29 7 29 * *"),
 		envOrDefault("ZREAD_TRENDING_CRON", "0 6 * * *"))
 
 	// Initialize HTTP handler
 	wh := handler.NewWeeklyHandler(s, sch.Sync, sch.SyncZread)
 	rh := handler.NewReposHandlerWithBulkCache(s, bulkCache)
 	dh := handler.NewDiscoveryHandler(s, sch.SyncDiscovery)
-	hgh := handler.NewHelloGitHubHandler(sch.SyncHelloGitHub, helloGitHubBackfill)
+	hgh := handler.NewHelloGitHubHandler(sch.SyncHelloGitHub, sch.ReconcileHelloGitHub, helloGitHubBackfill)
 	ih := handler.NewImportsHandler(ingestService, s)
 	ph := handler.NewPinsHandler(s, bulkCache)
 
