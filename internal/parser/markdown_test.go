@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// TestParseIssue399 用真实周刊样本验证解析器
-// docs/issue-399.md 预期至少提取 10 个 GitHub 项目
+// TestParseIssue399 用固定周刊片段验证解析器。
+// fixture 随 package 提交，避免测试依赖开发机上另一个仓库的相对路径。
 func TestParseIssue399(t *testing.T) {
-	content, err := os.ReadFile("../../docs/issue-399.md")
+	content, err := os.ReadFile("testdata/issue-399.md")
 	if err != nil {
 		t.Fatalf("无法读取测试样本: %v", err)
 	}
