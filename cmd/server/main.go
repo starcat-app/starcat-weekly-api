@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/dong4j/starcat-weekly-api/internal/enricher"
 	"github.com/dong4j/starcat-weekly-api/internal/github"
 	"github.com/dong4j/starcat-weekly-api/internal/handler"
+	"github.com/dong4j/starcat-weekly-api/internal/ingest"
 	"github.com/dong4j/starcat-weekly-api/internal/middleware"
 	"github.com/dong4j/starcat-weekly-api/internal/notifier"
 	"github.com/dong4j/starcat-weekly-api/internal/scheduler"
@@ -108,6 +110,11 @@ func main() {
 	// R-06.3: bulk endpoint 内存缓存（6h TTL + pre-marshaled + pre-gzipped + ETag 304）
 	// 单例，由 handler.HandleBulkV1 读 + scheduler / RebuildAggregates 写（Invalidate）。
 	bulkCache := handler.NewBulkCache()
+	wakeSignal := ingest.NewWakeSignal()
+	ingestWorker := ingest.NewWorker(s, ghClient, wakeSignal, bulkCache)
+	workerContext, stopWorker := context.WithCancel(context.Background())
+	defer stopWorker()
+	go ingestWorker.Run(workerContext)
 
 	// Initialize scheduler — bulkCache 注入作为 BulkCacheInvalidator，scheduler 跑完
 	// weekly / zread / discovery 同步后主动失效 bulk cache。
@@ -156,6 +163,7 @@ func main() {
 	go func() {
 		<-sigCh
 		log.Println("Received shutdown signal, closing service...")
+		stopWorker()
 		sch.Stop()
 		s.Close()
 		os.Exit(0)

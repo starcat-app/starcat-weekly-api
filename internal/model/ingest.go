@@ -76,6 +76,31 @@ type IngestItem struct {
 	FinishedAt         string `json:"finished_at,omitempty"`
 }
 
+// IngestWorkItem 是 Worker 领取后的完整工作快照。
+// 领取事务结束后只使用该值执行网络请求，避免持有 SQLite transaction。
+type IngestWorkItem struct {
+	ID          int64
+	BatchID     string
+	SourceCode  string
+	Owner       string
+	Repo        string
+	ExternalKey string
+	OccurredAt  time.Time
+	SourceURL   string
+	Title       string
+	Summary     string
+	Rank        *int
+	Payload     map[string]any
+	Attempts    int
+}
+
+type IngestFailureResult struct {
+	Status        string
+	Attempts      int
+	NextAttemptAt *time.Time
+	BatchTerminal bool
+}
+
 type EnqueueBatchResult struct {
 	Batch          IngestBatch
 	DuplicateCount int

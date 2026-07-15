@@ -132,7 +132,14 @@ func (s *SQLiteStore) createSchema() error {
 func (s *SQLiteStore) Close() error { return s.db.Close() }
 
 func (s *SQLiteStore) UpsertGitHubRepo(repo model.GitHubRepo) error {
-	now := time.Now().UTC()
+	return upsertGitHubRepo(s.db, repo, time.Now().UTC())
+}
+
+type sqlExecutor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func upsertGitHubRepo(executor sqlExecutor, repo model.GitHubRepo, now time.Time) error {
 	if repo.FullName == "" {
 		repo.FullName = repo.Owner + "/" + repo.Name
 	}
@@ -147,7 +154,7 @@ func (s *SQLiteStore) UpsertGitHubRepo(repo model.GitHubRepo) error {
 	sourceTypes := model.EncodeStringArray(repo.SourceTypes)
 	enrichedAt := nullableTime(repo.EnrichedAt)
 
-	_, err := s.db.Exec(`
+	_, err := executor.Exec(`
 		INSERT INTO github_repos (
 			gh_repo_id, owner, name, full_name, description, homepage, language,
 			stars, forks, watchers, subscribers, open_issues, owner_avatar,
@@ -267,17 +274,27 @@ func (s *SQLiteStore) UpsertSourceEvent(repoID int64, event model.SourceEventInp
 	if event.OccurredAt.IsZero() {
 		event.OccurredAt = time.Now().UTC()
 	}
-	payload, err := json.Marshal(event.Payload)
-	if err != nil {
-		return fmt.Errorf("encode source payload: %w", err)
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer rollback(tx)
-	if _, err := tx.Exec(`
+	if err := upsertSourceEventTx(tx, repoID, event, now); err != nil {
+		return err
+	}
+	if err := recomputeAggregateTx(tx, repoID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func upsertSourceEventTx(tx *sql.Tx, repoID int64, event model.SourceEventInput, now time.Time) error {
+	payload, err := json.Marshal(event.Payload)
+	if err != nil {
+		return fmt.Errorf("encode source payload: %w", err)
+	}
+	_, err = tx.Exec(`
 		INSERT INTO repo_source_events(
 			source_code, external_key, gh_repo_id, occurred_at, source_url,
 			title, summary, rank, payload_json, created_at, updated_at
@@ -293,13 +310,8 @@ func (s *SQLiteStore) UpsertSourceEvent(repoID int64, event model.SourceEventInp
 			updated_at=excluded.updated_at
 	`, event.SourceCode, event.ExternalKey, repoID, event.OccurredAt.UTC().Format(time.RFC3339),
 		nullString(event.SourceURL), nullString(event.Title), nullString(event.Summary), event.Rank,
-		string(payload), now, now); err != nil {
-		return err
-	}
-	if err := recomputeAggregateTx(tx, repoID); err != nil {
-		return err
-	}
-	return tx.Commit()
+		string(payload), now.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
+	return err
 }
 
 func (s *SQLiteStore) QueryRepos(params model.RepoQuery) ([]model.RepoFeedItem, int, error) {

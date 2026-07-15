@@ -91,11 +91,13 @@ func (c *Client) SetHTTPClient(client *http.Client) {
 // 内部处理：token 选择、速率限制等待、3 次重试（429/401/5xx）、pool 状态更新。
 // 调用方只需关心返回的 RepoResponse 或 error。
 func (c *Client) GetRepo(ctx context.Context, owner, repo string) (*RepoResponse, error) {
+	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		resp, err := c.getRepoOnce(ctx, owner, repo)
 		if err == nil {
 			return resp, nil
 		}
+		lastErr = err
 
 		// 速率限制 → 已内部 Pause，等一轮再重试
 		if errors.Is(err, ErrRateLimited) {
@@ -115,7 +117,7 @@ func (c *Client) GetRepo(ctx context.Context, owner, repo string) (*RepoResponse
 
 		return nil, err
 	}
-	return nil, fmt.Errorf("GetRepo %s/%s failed after 3 attempts", owner, repo)
+	return nil, fmt.Errorf("GetRepo %s/%s failed after 3 attempts: %w", owner, repo, lastErr)
 }
 
 func (c *Client) getRepoOnce(ctx context.Context, owner, repo string) (*RepoResponse, error) {
