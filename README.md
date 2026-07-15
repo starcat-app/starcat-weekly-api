@@ -234,43 +234,20 @@ HelloGitHub 历史回填请求：
 { "gh_repo_ids": [123, 456, 789] }
 ```
 
-### zread 周 trending（v0.5 新增）
+### ZRead 来源
 
+ZRead 已并入统一 Weekly feed，不再提供独立公开列表端点：
+
+```http
+GET /api/v1/repos?source=zread&page=1&page_size=30
+Authorization: Bearer <API_KEY>
 ```
-GET /api/v1/zread?week=this|last|YYYY-MM-DD&limit=20
-```
 
-参数：
-- `week`：可选，默认 `this`；取值 `this` / `last` / 任意历史周开始日期（ISO 8601 格式如 `2026-05-25`）
-- `limit`：可选，默认 20，上限 50
+需要立即重新抓取 ZRead 时使用管理端同步接口：
 
-响应示例（envelope 共享，`data.week_label` 标识 zread 数据源）：
-
-```json
-{
-  "schema_version": 1,
-  "data": {
-    "week_label": "This Week",
-    "week_start": "2026-06-08",
-    "week_end": "2026-06-14",
-    "fetched_at": "2026-06-10T07:00:00Z",
-    "items": [
-      {
-        "rank": 1,
-        "owner": "Panniantong",
-        "name": "Agent-Reach",
-        "html_url": "https://github.com/Panniantong/Agent-Reach",
-        "description": "Give your AI agent eyes to see the entire internet.",
-        "description_zh": "赋予 AI 代理互联网视野，零 API 费用。",
-        "star_count": 17708,
-        "language": "python",
-        "wiki_id": "a2570fde-...",
-        "gh_repo_id": 871234567
-      }
-    ]
-  },
-  "meta": { "total": 19, "generated_at": "2026-06-10T07:00:00Z", "cache_status": "fresh" }
-}
+```http
+POST /internal/sync/zread
+Authorization: Bearer <ADMIN_API_KEY>
 ```
 
 ### AI Discovery 列表（v0.6 新增）
