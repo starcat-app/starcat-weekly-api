@@ -22,6 +22,7 @@ import (
 	"github.com/dong4j/starcat-weekly-api/internal/middleware"
 	"github.com/dong4j/starcat-weekly-api/internal/notifier"
 	"github.com/dong4j/starcat-weekly-api/internal/scheduler"
+	weeklysource "github.com/dong4j/starcat-weekly-api/internal/source"
 	"github.com/dong4j/starcat-weekly-api/internal/store"
 	"github.com/dong4j/starcat-weekly-api/internal/tokenpool"
 )
@@ -105,19 +106,23 @@ func main() {
 	ingestService := ingest.NewService(s, wakeSignal)
 	ingestWorker := ingest.NewWorker(s, ghClient, wakeSignal, bulkCache)
 	discoveryCollector := discovery.NewCollector(hnClient, ingestService, envInt("DISCOVERY_HN_LIMIT", 30))
+	helloGitHubCollector := weeklysource.NewHelloGitHubCollector(
+		weeklysource.NewHelloGitHubClient(nil), ingestService, envInt("HELLOGITHUB_FEATURED_MAX_PAGES", 3))
 	workerContext, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
 	go ingestWorker.Run(workerContext)
 
 	// Collector 只入队；Worker 在批次终态统一失效 bulk cache。
-	sch := scheduler.New(s, ingestService, wikiNotifier, repoDir, discoveryCollector,
+	sch := scheduler.New(s, ingestService, wikiNotifier, repoDir, discoveryCollector, helloGitHubCollector,
 		envOrDefault("DISCOVERY_CRON", "17 * * * *"),
+		envOrDefault("HELLOGITHUB_CRON", "31 6 * * *"),
 		envOrDefault("ZREAD_TRENDING_CRON", "0 6 * * *"))
 
 	// Initialize HTTP handler
 	wh := handler.NewWeeklyHandler(s, sch.Sync, sch.SyncZread)
 	rh := handler.NewReposHandlerWithBulkCache(s, bulkCache)
 	dh := handler.NewDiscoveryHandler(s, sch.SyncDiscovery)
+	hgh := handler.NewHelloGitHubHandler(sch.SyncHelloGitHub)
 	ih := handler.NewImportsHandler(ingestService, s)
 	ph := handler.NewPinsHandler(s, bulkCache)
 
@@ -145,6 +150,7 @@ func main() {
 	// v0.5 R-02 新增：zread 同步 admin 端点（与阮一峰周刊同步解耦）
 	mux.Handle("POST /internal/sync/zread", adminAuthMW.Wrap(http.HandlerFunc(wh.HandleZreadSync)))
 	mux.Handle("POST /internal/sync/discovery", adminAuthMW.Wrap(http.HandlerFunc(dh.HandleAdminSync)))
+	mux.Handle("POST /internal/sync/hellogithub", adminAuthMW.Wrap(http.HandlerFunc(hgh.HandleAdminSync)))
 	mux.Handle("POST /internal/rebuild-aggregates", adminAuthMW.Wrap(http.HandlerFunc(rh.HandleRebuildAggregates)))
 	mux.Handle("GET /internal/sources", adminAuthMW.Wrap(http.HandlerFunc(ih.HandleSources)))
 	mux.Handle("POST /internal/imports", adminAuthMW.Wrap(http.HandlerFunc(ih.HandleCreate)))
@@ -180,6 +186,7 @@ func main() {
 	log.Printf("  POST /internal/sync/weekly      - Trigger manual sync (阮一峰周刊)")
 	log.Printf("  POST /internal/sync/zread       - Trigger manual sync (zread 周 trending)")
 	log.Printf("  POST /internal/sync/discovery   - Trigger manual sync (ADMIN_API_KEYS)")
+	log.Printf("  POST /internal/sync/hellogithub - Trigger HelloGitHub featured sync")
 	log.Printf("  POST /internal/rebuild-aggregates - Recompute source aggregates")
 	log.Printf("  GET  /internal/sources           - List fixed sources and ingest status")
 	log.Printf("  POST /internal/imports           - Enqueue a manual repository batch")

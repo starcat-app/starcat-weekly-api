@@ -19,6 +19,7 @@ import (
 	"github.com/dong4j/starcat-weekly-api/internal/model"
 	"github.com/dong4j/starcat-weekly-api/internal/notifier"
 	"github.com/dong4j/starcat-weekly-api/internal/parser"
+	weeklysource "github.com/dong4j/starcat-weekly-api/internal/source"
 	"github.com/dong4j/starcat-weekly-api/internal/spider"
 	"github.com/dong4j/starcat-weekly-api/internal/store"
 )
@@ -29,7 +30,9 @@ type Scheduler struct {
 	enqueuer      ingestEnqueuer
 	wikiNotifier  *notifier.WikiNotifier
 	discovery     discoveryRunner
+	helloGitHub   helloGitHubRunner
 	discoveryCron string
+	helloCron     string
 	zreadCron     string
 	repoDir       string
 	cron          *cron.Cron
@@ -45,15 +48,22 @@ type discoveryRunner interface {
 	RunOnce(context.Context) (discovery.RunStats, error)
 }
 
+type helloGitHubRunner interface {
+	RunFeatured(context.Context) (weeklysource.HelloGitHubRunStats, error)
+}
+
 // New 创建调度器。
 //
 // GitHub enrich 完成后的 bulk cache 失效由统一 Worker 负责；Collector 入队时不能提前失效。
-func New(s store.Store, enqueuer ingestEnqueuer, wn *notifier.WikiNotifier, repoDir string, discoveryService discoveryRunner, discoveryCron string, zreadCron string) *Scheduler {
+func New(s store.Store, enqueuer ingestEnqueuer, wn *notifier.WikiNotifier, repoDir string, discoveryService discoveryRunner, helloGitHubService helloGitHubRunner, discoveryCron string, helloCron string, zreadCron string) *Scheduler {
 	if discoveryCron == "" {
 		discoveryCron = "17 * * * *"
 	}
 	if zreadCron == "" {
 		zreadCron = "0 6 * * *" // 默认每天 06:00 UTC
+	}
+	if helloCron == "" {
+		helloCron = "31 6 * * *"
 	}
 	return &Scheduler{
 		store:         s,
@@ -61,7 +71,9 @@ func New(s store.Store, enqueuer ingestEnqueuer, wn *notifier.WikiNotifier, repo
 		wikiNotifier:  wn,
 		repoDir:       repoDir,
 		discovery:     discoveryService,
+		helloGitHub:   helloGitHubService,
 		discoveryCron: discoveryCron,
+		helloCron:     helloCron,
 		zreadCron:     zreadCron,
 		cron:          cron.New(),
 		running:       make(map[string]bool),
@@ -73,7 +85,7 @@ func New(s store.Store, enqueuer ingestEnqueuer, wn *notifier.WikiNotifier, repo
 // 关键约束：三个 Collector 只能并行解析并持久化候选，不能在 scheduler 内调用 GitHub；
 // GitHub 配额由单一 Worker 串行消费，避免某个来源的冷启动阻塞其他来源入队。
 func (s *Scheduler) Start() {
-	log.Println("[scheduler] 注册 cron 并并行启动首次同步（weekly / zread / discovery）...")
+	log.Println("[scheduler] 注册 cron 并并行启动首次同步（weekly / zread / discovery / hellogithub）...")
 
 	// R-04: weekly 历史数据不需要小时级刷新。默认每周一 00:00 UTC 更新一次。
 	_, err := s.cron.AddFunc("0 0 * * 1", func() {
@@ -98,9 +110,15 @@ func (s *Scheduler) Start() {
 			log.Printf("[scheduler] cron add (discovery): %v", err)
 		}
 	}
+	if s.helloGitHub != nil {
+		_, err = s.cron.AddFunc(s.helloCron, s.runHelloGitHub)
+		if err != nil {
+			log.Printf("[scheduler] cron add (hellogithub): %v", err)
+		}
+	}
 
 	s.cron.Start()
-	log.Printf("[scheduler] cron 已启动 (weekly Mon 00:00 UTC + zread %s + discovery %s)", s.zreadCron, s.discoveryCron)
+	log.Printf("[scheduler] cron 已启动 (weekly Mon 00:00 UTC + zread %s + discovery %s + hellogithub %s)", s.zreadCron, s.discoveryCron, s.helloCron)
 
 	go func() {
 		log.Println("[scheduler] 首次 weekly 同步...")
@@ -110,6 +128,9 @@ func (s *Scheduler) Start() {
 	go s.runZreadFetch()
 	if s.discovery != nil {
 		go s.runDiscovery()
+	}
+	if s.helloGitHub != nil {
+		go s.runHelloGitHub()
 	}
 }
 
@@ -191,6 +212,29 @@ func (s *Scheduler) runDiscovery() {
 // SyncDiscovery 异步触发 Discovery 同步，供独立 Admin endpoint 复用。
 func (s *Scheduler) SyncDiscovery() {
 	go s.runDiscovery()
+}
+
+// runHelloGitHub 执行精选增量抓取并持久化入队，GitHub enrich 继续由统一 Worker 完成。
+func (s *Scheduler) runHelloGitHub() {
+	if s.helloGitHub == nil {
+		return
+	}
+	if !s.tryLock("hellogithub") {
+		log.Println("[scheduler] hellogithub sync 已在运行中，跳过本次")
+		return
+	}
+	defer s.unlock("hellogithub")
+	stats, err := s.helloGitHub.RunFeatured(context.Background())
+	if err != nil {
+		log.Printf("[scheduler] hellogithub sync: %v", err)
+		return
+	}
+	log.Printf("[scheduler] hellogithub sync 完成: pages=%d fetched=%d queued=%d batches=%d", stats.Pages, stats.Fetched, stats.Queued, len(stats.BatchIDs))
+}
+
+// SyncHelloGitHub 异步触发 HelloGitHub 精选增量同步，供 Admin endpoint 复用。
+func (s *Scheduler) SyncHelloGitHub() {
+	go s.runHelloGitHub()
 }
 
 // tryLock 检查并标记任务运行中。返回 false 表示已有同名任务在跑。
