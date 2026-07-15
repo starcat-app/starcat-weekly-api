@@ -25,6 +25,7 @@ type SourceStatus struct {
 	LastSuccessAt       string       `json:"last_success_at,omitempty"`
 	LastFailureAt       string       `json:"last_failure_at,omitempty"`
 	LatestBatch         *IngestBatch `json:"latest_batch,omitempty"`
+	ActiveBackfill      *IngestBatch `json:"active_backfill,omitempty"`
 }
 
 // SourceEntry 是仓库在某个来源中的最新代表事件。

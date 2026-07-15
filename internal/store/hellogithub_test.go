@@ -70,7 +70,7 @@ func TestHelloGitHubBackfillRetryWaitsUntilDue(t *testing.T) {
 	}
 }
 
-func TestSourceStatusKeepsActiveHelloGitHubBackfillVisible(t *testing.T) {
+func TestSourceStatusSeparatesLatestBatchAndActiveHelloGitHubBackfill(t *testing.T) {
 	s, err := NewSQLiteStore(filepath.Join(t.TempDir(), "hellogithub-status.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -97,8 +97,11 @@ func TestSourceStatusKeepsActiveHelloGitHubBackfillVisible(t *testing.T) {
 	}
 	for _, status := range statuses {
 		if status.Code == model.SourceHelloGitHub {
-			if status.LatestBatch == nil || status.LatestBatch.ID != "controller" {
+			if status.LatestBatch == nil || status.LatestBatch.ID != "volume-1" {
 				t.Fatalf("latest_batch=%+v", status.LatestBatch)
+			}
+			if status.ActiveBackfill == nil || status.ActiveBackfill.ID != "controller" {
+				t.Fatalf("active_backfill=%+v", status.ActiveBackfill)
 			}
 			return
 		}

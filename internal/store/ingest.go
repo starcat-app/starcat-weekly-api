@@ -237,16 +237,7 @@ func (s *SQLiteStore) GetSourceStatuses(manualOnly bool) ([]model.SourceStatus, 
 		item.LastSuccessAt = lastSuccess.String
 		item.LastFailureAt = lastFailure.String
 		var latestID string
-		// HelloGitHub 历史回填会为每一期创建子批次。控制台刷新时必须优先返回仍在运行的
-		// controller，否则较新的子批次会遮蔽总进度，服务重启后也无法继续展示 checkpoint。
-		if err := s.db.QueryRow(`
-			SELECT id FROM ingest_batches
-			WHERE source_code=?
-			ORDER BY
-				CASE WHEN json_extract(cursor_json, '$.controller')=1 AND status IN (?, ?) THEN 0 ELSE 1 END,
-				created_at DESC,
-				id DESC
-			LIMIT 1`, item.Code, model.IngestBatchPending, model.IngestBatchProcessing).Scan(&latestID); err != nil {
+		if err := s.db.QueryRow(`SELECT id FROM ingest_batches WHERE source_code=? ORDER BY created_at DESC, id DESC LIMIT 1`, item.Code).Scan(&latestID); err != nil {
 			if err != sql.ErrNoRows {
 				return nil, err
 			}
@@ -256,6 +247,27 @@ func (s *SQLiteStore) GetSourceStatuses(manualOnly bool) ([]model.SourceStatus, 
 				return nil, err
 			}
 			item.LatestBatch = batch
+		}
+		// latest_batch 保持“最新采集动作”语义；活动回填单独返回，避免 controller
+		// 与较新的 featured/reconcile 子批次互相遮蔽。
+		if item.Code == model.SourceHelloGitHub {
+			var activeBackfillID string
+			err := s.db.QueryRow(`
+				SELECT id FROM ingest_batches
+				WHERE source_code=? AND json_extract(cursor_json, '$.controller')=1
+				  AND status IN (?, ?)
+				ORDER BY created_at, id LIMIT 1
+			`, item.Code, model.IngestBatchPending, model.IngestBatchProcessing).Scan(&activeBackfillID)
+			if err != nil && err != sql.ErrNoRows {
+				return nil, err
+			}
+			if err == nil {
+				batch, err := s.GetIngestBatch(activeBackfillID, false)
+				if err != nil {
+					return nil, err
+				}
+				item.ActiveBackfill = batch
+			}
 		}
 	}
 	return statuses, nil
