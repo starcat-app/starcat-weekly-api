@@ -9,7 +9,7 @@
 //     全量数据只有一份 payload。Get/Set/Invalidate 全部针对这一个 entry。
 //   - TTL 6h: 与 trending 后端 weekly 桶同档（trending weekly 也是 6h）。bulk 是
 //     weekly 全量 4000 条数据，build 一次 ~50ms（SQLite 查询 + marshal + gzip 串
-//     起来）；客户端 12h TTL 已经做了主要节流，后端 cache 仅在"多客户端短时间内
+//     起来）；客户端 6h TTL 已经做了主要节流，后端 cache 仅在"多客户端短时间内
 //     并发 / 用户连续主动刷新"场景起作用。TTL 长短不影响数据新鲜度——scheduler
 //     的 sync()/runZreadFetch()/runDiscovery() 与 admin RebuildAggregates 跑完后
 //     都会主动 Invalidate 不等 TTL；TTL 只是"主动失效漏触点"时的兜底窗口。
@@ -65,7 +65,7 @@ type bulkCacheEntry struct {
 //   - 主动失效是主线：scheduler 的 sync() / runZreadFetch() / runDiscovery() +
 //     admin RebuildAggregates 跑完都会调 cache.Invalidate()；TTL 长短不决定数据
 //     新鲜度，只决定"漏失效路径"时的兜底窗口大小；
-//   - 客户端 12h TTL 已经把单客户端请求频次降到天级，后端 60s 在"多客户端并发"
+//   - 客户端 6h TTL 与后端窗口一致，已把单客户端重复请求压低；后端 60s 在"多客户端并发"
 //     或"用户连续主动刷新"场景下经常被击穿 → 反复 build（50ms / 次）浪费 CPU；
 //   - 与 trending weekly 桶（同样 6h）保持一致，便于运维心智统一；
 //   - 风险：scheduler / admin Invalidate 漏触点时过时窗口从 60s 扩到 6h；当前
