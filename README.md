@@ -53,58 +53,59 @@ brew install --cask starcat
 > Starcat provides hosted defaults for normal users. This API is open source so advanced users can inspect it, run it locally, or deploy their own instance.
 <!-- starcat-promo:end -->
 
-Starcat Weekly 后端服务 —— 聚合[阮一峰周刊](https://github.com/ruanyf/weekly)、
-[zread.ai](https://zread.ai)、Show HN、HelloGitHub 与受控人工情报来源中的 GitHub 项目，
-通过统一 REST API 提供给 [Starcat](https://starcat.ink) 前端。
+Starcat Weekly is a backend service that aggregates GitHub projects from
+[Ruan Yifeng's Weekly](https://github.com/ruanyf/weekly), [zread.ai](https://zread.ai),
+Show HN, HelloGitHub, and controlled manual intelligence sources, then serves them to
+the [Starcat](https://starcat.ink) frontend through a unified REST API.
 
-## R-01 改造说明
+## R-01 Upgrade Notes
 
-本项目已完成 R-01 契约升级：
-- **字段补齐**：`projects` 表扩充至 14+5 个 GitHub 元数据字段。
-- **接口版本化**：所有业务接口迁移至 `/api/v1/*`。
-- **响应标准化**：所有响应使用 `{ "schema_version": <version>, "data": ... }` envelope；多来源 bulk 响应为 schema v2。
-- **鉴权机制**：引入 `Bearer Token` 鉴权（需 `Authorization` 头）。
-- **Token 池**：支持 `GITHUB_TOKENS` 多 token 轮换。
+This project has completed the R-01 contract upgrade:
+- **Expanded fields**: The `projects` table now includes 14+5 GitHub metadata fields.
+- **API versioning**: All business endpoints have moved to `/api/v1/*`.
+- **Standardized responses**: Every response uses the `{ "schema_version": <version>, "data": ... }` envelope; multi-source bulk responses use schema v2.
+- **Authentication**: `Bearer Token` authentication is required through the `Authorization` header.
+- **Token pool**: `GITHUB_TOKENS` supports rotation across multiple tokens.
 
-## v0.5 R-02（ZRead 来源）
+## v0.5 R-02 (ZRead Source)
 
-- **统一列表** `GET /api/v1/repos?source=zread`，不再保留独立公开列表端点
-- **新表** `zread_trending`（0.5.0 新建,决策 ① 独立建表不合并 projects）
-- **新 cron 任务** 周一 06:00 UTC 拉 zread 公开 JSON 端点并写入数据库
+- **Unified list**: `GET /api/v1/repos?source=zread`; the separate public list endpoint has been removed
+- **New table**: `zread_trending` (introduced in 0.5.0; decision ① keeps it separate from `projects`)
+- **New cron job**: Fetches the public zread JSON endpoint every Monday at 06:00 UTC and writes the results to the database
 
-## v0.6 AI Discovery（Show HN）
+## v0.6 AI Discovery (Show HN)
 
-- Show HN 作为固定 `discovery` 来源进入 `GET /api/v1/repos` 与 bulk，不再保留独立公开端点。
-- `POST /internal/sync/discovery`：管理员手动触发同步，使用独立 `ADMIN_API_KEYS`。
-- 数据源使用 Hacker News 官方 Firebase API，不解析 HTML、不依赖 Algolia。
-- Collector 把同一仓库的多次 Show HN 投稿作为通用来源事件入队，GitHub enrich 由统一 Worker 异步处理。
-- 当前流水线不调用 LLM；旧 Discovery 专属表只作为 migration 回滚证据，不再双写。
+- Show HN is included as the fixed `discovery` source in `GET /api/v1/repos` and bulk responses; no separate public endpoint remains.
+- `POST /internal/sync/discovery`: Allows administrators to trigger a sync manually using separate `ADMIN_API_KEYS`.
+- The data source is the official Hacker News Firebase API. The collector does not parse HTML or depend on Algolia.
+- The collector queues multiple Show HN submissions for the same repository as unified source events. A shared worker performs GitHub enrichment asynchronously.
+- The current pipeline does not call an LLM. The legacy Discovery-specific tables remain only as migration rollback evidence and are no longer dual-written.
 
-## Weekly 多来源采集
+## Weekly Multi-Source Ingestion
 
-- `weekly / zread / discovery / hellogithub / ai_intelligence` 统一写入通用来源事件，`GET /api/v1/repos/bulk` 使用 schema v2 返回当前有公开仓库事件的动态来源目录、通用来源条目和置顶顺序。
-- Collector 与人工录入只在 SQLite transaction 中写入 batch/items；commit 后唤醒后台 Worker，由 Worker 在事务外调用 GitHub API。
-- Worker 启动时扫描一次，收到内存信号立即处理，并每 15 分钟兜底扫描；瞬时失败按 15/30 分钟退避，最多尝试 3 次后剔除。
-- HelloGitHub 支持 featured 增量、月刊对账与可恢复的历史 volume 回填；回填 checkpoint 保存在数据库中。
-- `POST /internal/imports` 只允许 `manual_import_enabled=true` 的固定来源，首期仅允许 `ai_intelligence`。
-- Weekly 支持多个全局置顶项目，管理端以完整 `gh_repo_ids` 列表原子替换顺序。
+- `weekly / zread / discovery / hellogithub / ai_intelligence` all write to the unified source event model. `GET /api/v1/repos/bulk` uses schema v2 to return the dynamic source catalog for sources with public repository events, unified source entries, and pin order.
+- Collectors and manual imports write only batches and items within a SQLite transaction. After commit, they wake the background worker, which calls the GitHub API outside the transaction boundary.
+- The worker scans once at startup, processes immediately when it receives an in-memory signal, and performs a fallback scan every 15 minutes. Transient failures are retried with 15- and 30-minute backoff intervals, then removed after three failed attempts.
+- HelloGitHub supports incremental featured ingestion, monthly issue reconciliation, and resumable historical volume backfill. The backfill checkpoint is stored in the database.
+- `POST /internal/imports` accepts only fixed sources with `manual_import_enabled=true`; the initial release allows only `ai_intelligence`.
+- Weekly supports multiple global pinned projects. The admin endpoint atomically replaces their order with the complete `gh_repo_ids` list.
 
-## 快速开始
+## Quick Start
 
-### 本地开发
+### Local Development
 
 ```bash
-# 1. 准备配置文件
+# 1. Prepare the configuration file
 cp .env.example .env
-# 编辑 .env 填充 API_KEYS 和 GITHUB_TOKENS
+# Edit .env and set API_KEYS and GITHUB_TOKENS
 
-# 2. 下载依赖
+# 2. Download dependencies
 go mod download
 
-# 3. 运行
+# 3. Run
 go run ./cmd/server/
 
-# 4. 测试 API（需带 API Key）
+# 4. Test the API (requires an API key)
 API_KEY="your-key-from-env"
 curl -H "Authorization: Bearer $API_KEY" http://localhost:5003/api/v1/ping
 curl -H "Authorization: Bearer $API_KEY" http://localhost:5003/api/v1/repos?page=1\&page_size=5
@@ -120,10 +121,10 @@ docker run -p 5003:5003 \
   starcat-weekly-api
 ```
 
-### 部署到 Fly.io
+### Deploy to Fly.io
 
 ```bash
-# 设置生产环境 Secrets
+# Set production secrets
 fly secrets set \
   API_KEYS="sk-starcat-prodKey1,..." \
   ADMIN_API_KEYS="sk-starcat-adminKey1,..." \
@@ -134,66 +135,66 @@ fly secrets set \
 fly deploy
 ```
 
-## 配置 (.env)
+## Configuration (.env)
 
-| 变量 | 说明 |
+| Variable | Description |
 |------|------|
-| `PORT` | 服务端口（默认 5003） |
-| `STORE_FILE` | SQLite 数据库路径 |
-| `REPO_DIR` | 周刊 git clone 存放路径 |
-| `API_KEYS` | 逗号分隔的 API Key 白名单（用于 Bearer 鉴权） |
-| `ADMIN_API_KEYS` | 来源同步、批量录入和置顶管理专用管理员 Key；不得随客户端分发 |
-| `GITHUB_TOKENS` | 逗号分隔的 GitHub PAT 池 |
-| `DISCOVERY_CRON` | Discovery cron，默认每小时第 17 分 |
-| `HELLOGITHUB_CRON` | HelloGitHub featured 增量 cron，默认每天 06:31 UTC |
-| `HELLOGITHUB_RECONCILE_CRON` | HelloGitHub 月刊对账 cron，默认每月 29 日 07:29 UTC |
-| `HELLOGITHUB_FEATURED_MAX_PAGES` | featured 增量最大分页数，默认 3 |
+| `PORT` | Server port (default: 5003) |
+| `STORE_FILE` | SQLite database path |
+| `REPO_DIR` | Path for the Weekly git clone |
+| `API_KEYS` | Comma-separated allowlist of API keys for Bearer authentication |
+| `ADMIN_API_KEYS` | Dedicated admin keys for source sync, bulk imports, and pin management; must never be distributed with the client |
+| `GITHUB_TOKENS` | Comma-separated pool of GitHub PATs |
+| `DISCOVERY_CRON` | Discovery cron schedule; defaults to minute 17 of every hour |
+| `HELLOGITHUB_CRON` | HelloGitHub incremental featured ingestion cron; defaults to 06:31 UTC daily |
+| `HELLOGITHUB_RECONCILE_CRON` | HelloGitHub monthly issue reconciliation cron; defaults to 07:29 UTC on the 29th of each month |
+| `HELLOGITHUB_FEATURED_MAX_PAGES` | Maximum pages for incremental featured ingestion; defaults to 3 |
 
 ## API (v1)
 
-所有业务接口均需携带 `Authorization: Bearer <API_KEY>` 请求头。
+All business endpoints require the `Authorization: Bearer <API_KEY>` request header.
 
-### 连通性探测
+### Connectivity Check
 
 ```
 GET /api/v1/ping
 ```
 
-该端点需要 Bearer Auth，成功时返回 `data.service = "weekly"` 与 `data.ok = true`；它是 Starcat 设置页“测试连接”使用的专用接口。
+This endpoint requires Bearer authentication. A successful response contains `data.service = "weekly"` and `data.ok = true`; Starcat uses it specifically for the "Test Connection" action in Settings.
 
-### 聚合项目列表
+### Aggregated Repository List
 
 ```
 GET /api/v1/repos?page=1&page_size=20&lang=Go&source=hellogithub&sort=stars&order=desc
 ```
 
-`source` 可选，固定值为 `weekly`、`zread`、`discovery`、`hellogithub`、`ai_intelligence`；不传时返回全部来源。`sort` / `order` 与 `lang` 均可选。
+`source` is optional and accepts the fixed values `weekly`, `zread`, `discovery`, `hellogithub`, and `ai_intelligence`. If omitted, the endpoint returns all sources. `sort`, `order`, and `lang` are also optional.
 
-### 全量 bulk 快照
+### Full Bulk Snapshot
 
 ```
 GET /api/v1/repos/bulk
 ```
 
-响应为 schema v2，`data` 包含当前有公开仓库事件的动态 `sources` 目录、聚合 `repos` 与 `languages`；Starcat 用此快照在本地完成来源、语言、排序与分页筛选。
+This response uses schema v2. Its `data` object contains the dynamic `sources` catalog for sources with public repository events, aggregated `repos`, and `languages`. Starcat uses this snapshot to filter by source and language, sort, and paginate locally.
 
-### 单个聚合项目详情
+### Aggregated Repository Details
 
 ```
 GET /api/v1/repos/{gh_repo_id}
 ```
 
-详情包含该仓库的通用来源条目，`gh_repo_id` 是 GitHub 的数值仓库 ID。
+The details include the repository's unified source entries. `gh_repo_id` is the numeric GitHub repository ID.
 
-### 聚合语言列表
+### Aggregated Language List
 
 ```
 GET /api/v1/repos/languages
 ```
 
-### 多来源管理接口 (Admin)
+### Multi-Source Admin Endpoints
 
-所有接口使用 `Authorization: Bearer <ADMIN_API_KEY>`：
+All endpoints use `Authorization: Bearer <ADMIN_API_KEY>`:
 
 ```text
 GET  /internal/sources?manual_import=true
@@ -206,7 +207,7 @@ GET  /internal/pins
 POST /internal/pins
 ```
 
-AI 情报批量录入示例；接口先持久化并返回 `202 Accepted`，GitHub enrich 异步执行：
+Example bulk import for AI intelligence. The endpoint persists the request before returning `202 Accepted`, and GitHub enrichment runs asynchronously:
 
 ```json
 {
@@ -223,7 +224,7 @@ AI 情报批量录入示例；接口先持久化并返回 `202 Accepted`，GitHu
 }
 ```
 
-HelloGitHub 历史回填请求：
+HelloGitHub historical backfill request:
 
 ```json
 {
@@ -234,15 +235,15 @@ HelloGitHub 历史回填请求：
 }
 ```
 
-置顶接口接收完整有序列表，空数组表示清空：
+The pin endpoint accepts the complete ordered list. An empty array clears all pins:
 
 ```json
 { "gh_repo_ids": [123, 456, 789] }
 ```
 
-### ZRead 与 AI Discovery 来源
+### ZRead and AI Discovery Sources
 
-ZRead 与 Show HN AI Discovery 都已并入统一 Weekly feed，不再提供独立公开列表或详情端点：
+ZRead and Show HN AI Discovery are both part of the unified Weekly feed. They no longer have separate public list or detail endpoints:
 
 ```http
 GET /api/v1/repos?source=zread&page=1&page_size=30
@@ -252,7 +253,7 @@ GET /api/v1/repos?source=discovery&page=1&page_size=30
 Authorization: Bearer <API_KEY>
 ```
 
-需要立即重新抓取固定采集来源时使用管理端同步接口：
+Use the admin sync endpoints to refresh fixed collector sources immediately:
 
 ```http
 POST /internal/sync/weekly
@@ -261,29 +262,29 @@ POST /internal/sync/discovery
 Authorization: Bearer <ADMIN_API_KEY>
 ```
 
-这些端点会消耗 GitHub 配额，因此不接受普通 `API_KEYS`。
+These endpoints consume GitHub quota, so they do not accept regular `API_KEYS`.
 
-### 健康检查 (不鉴权)
+### Health Check (No Authentication)
 
 ```
 GET /healthz
 ```
 
-## 技术栈
+## Technology Stack
 
-- **Go 1.23** — `net/http` 标准库
-- **goldmark** — Markdown AST 解析
-- **modernc.org/sqlite** — 纯 Go SQLite（无 CGO，可交叉编译进 Docker scratch）
-- **robfig/cron/v3** — 定时同步
-- **Docker + Fly.io** — 多阶段构建，256MB 内存
+- **Go 1.23** — `net/http` standard library
+- **goldmark** — Markdown AST parsing
+- **modernc.org/sqlite** — Pure Go SQLite with no CGO, suitable for cross-compilation into a Docker scratch image
+- **robfig/cron/v3** — Scheduled synchronization
+- **Docker + Fly.io** — Multi-stage build with 256 MB of memory
 
-## 测试
+## Testing
 
 ```bash
-# 全部
+# Run all tests
 go test ./...
 
-# 只跑 parser / spider 单测
+# Run parser / spider unit tests only
 go test ./internal/parser/ -v
 go test ./internal/spider/ -v
 ```
