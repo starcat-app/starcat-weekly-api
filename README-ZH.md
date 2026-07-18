@@ -62,7 +62,7 @@ Starcat Weekly 后端服务 —— 聚合[阮一峰周刊](https://github.com/ru
 本项目已完成 R-01 契约升级：
 - **字段补齐**：`projects` 表扩充至 14+5 个 GitHub 元数据字段。
 - **接口版本化**：所有业务接口迁移至 `/api/v1/*`。
-- **响应标准化**：所有响应包入 `{ "schema_version": 1, "data": ... }` envelope。
+- **响应标准化**：所有响应使用 `{ "schema_version": <version>, "data": ... }` envelope；多来源 bulk 响应为 schema v2。
 - **鉴权机制**：引入 `Bearer Token` 鉴权（需 `Authorization` 头）。
 - **Token 池**：支持 `GITHUB_TOKENS` 多 token 轮换。
 
@@ -82,7 +82,7 @@ Starcat Weekly 后端服务 —— 聚合[阮一峰周刊](https://github.com/ru
 
 ## Weekly 多来源采集
 
-- `weekly / zread / discovery / hellogithub / ai_intelligence` 统一写入通用来源事件，`GET /api/v1/repos/bulk` 使用 schema v2 返回动态来源目录、通用来源条目和置顶顺序。
+- `weekly / zread / discovery / hellogithub / ai_intelligence` 统一写入通用来源事件，`GET /api/v1/repos/bulk` 使用 schema v2 返回当前有公开仓库事件的动态来源目录、通用来源条目和置顶顺序。
 - Collector 与人工录入只在 SQLite transaction 中写入 batch/items；commit 后唤醒后台 Worker，由 Worker 在事务外调用 GitHub API。
 - Worker 启动时扫描一次，收到内存信号立即处理，并每 15 分钟兜底扫描；瞬时失败按 15/30 分钟退避，最多尝试 3 次后剔除。
 - HelloGitHub 支持 featured 增量、月刊对账与可恢复的历史 volume 回填；回填 checkpoint 保存在数据库中。
@@ -98,15 +98,16 @@ Starcat Weekly 后端服务 —— 聚合[阮一峰周刊](https://github.com/ru
 cp .env.example .env
 # 编辑 .env 填充 API_KEYS 和 GITHUB_TOKENS
 
-# 2. 安装依赖
-go mod tidy
+# 2. 下载依赖
+go mod download
 
 # 3. 运行
 go run ./cmd/server/
 
 # 4. 测试 API（需带 API Key）
 API_KEY="your-key-from-env"
-curl -H "Authorization: Bearer $API_KEY" http://localhost:5003/api/v1/weekly?page=1&page_size=5
+curl -H "Authorization: Bearer $API_KEY" http://localhost:5003/api/v1/ping
+curl -H "Authorization: Bearer $API_KEY" http://localhost:5003/api/v1/repos?page=1\&page_size=5
 ```
 
 ### Docker
@@ -127,7 +128,6 @@ fly secrets set \
   API_KEYS="sk-starcat-prodKey1,..." \
   ADMIN_API_KEYS="sk-starcat-adminKey1,..." \
   GITHUB_TOKENS="ghp_token1,ghp_token2" \
-  LLM_API_KEY="sk-..." \
   STORE_FILE="/data/weekly.db" \
   REPO_DIR="/data/weekly-repo"
 
@@ -153,34 +153,42 @@ fly deploy
 
 所有业务接口均需携带 `Authorization: Bearer <API_KEY>` 请求头。
 
-### 项目列表
+### 连通性探测
 
 ```
-GET /api/v1/weekly?page=1&page_size=20&issue=latest&lang=Go&sort=stars_desc
+GET /api/v1/ping
 ```
 
-### 单个项目详情
+该端点需要 Bearer Auth，成功时返回 `data.service = "weekly"` 与 `data.ok = true`；它是 Starcat 设置页“测试连接”使用的专用接口。
+
+### 聚合项目列表
 
 ```
-GET /api/v1/weekly/{owner}/{repo}
+GET /api/v1/repos?page=1&page_size=20&lang=Go&source=hellogithub&sort=stars&order=desc
 ```
 
-### 期号列表
+`source` 可选，固定值为 `weekly`、`zread`、`discovery`、`hellogithub`、`ai_intelligence`；不传时返回全部来源。`sort` / `order` 与 `lang` 均可选。
+
+### 全量 bulk 快照
 
 ```
-GET /api/v1/issues
+GET /api/v1/repos/bulk
 ```
 
-### 某期详情
+响应为 schema v2，`data` 包含当前有公开仓库事件的动态 `sources` 目录、聚合 `repos` 与 `languages`；Starcat 用此快照在本地完成来源、语言、排序与分页筛选。
+
+### 单个聚合项目详情
 
 ```
-GET /api/v1/issues/{number}
+GET /api/v1/repos/{gh_repo_id}
 ```
 
-### 手动同步 (Admin)
+详情包含该仓库的通用来源条目，`gh_repo_id` 是 GitHub 的数值仓库 ID。
+
+### 聚合语言列表
 
 ```
-POST /internal/sync/weekly
+GET /api/v1/repos/languages
 ```
 
 ### 多来源管理接口 (Admin)
@@ -232,83 +240,28 @@ HelloGitHub 历史回填请求：
 { "gh_repo_ids": [123, 456, 789] }
 ```
 
-### ZRead 来源
+### ZRead 与 AI Discovery 来源
 
-ZRead 已并入统一 Weekly feed，不再提供独立公开列表端点：
+ZRead 与 Show HN AI Discovery 都已并入统一 Weekly feed，不再提供独立公开列表或详情端点：
 
 ```http
 GET /api/v1/repos?source=zread&page=1&page_size=30
 Authorization: Bearer <API_KEY>
+
+GET /api/v1/repos?source=discovery&page=1&page_size=30
+Authorization: Bearer <API_KEY>
 ```
 
-需要立即重新抓取 ZRead 时使用管理端同步接口：
+需要立即重新抓取固定采集来源时使用管理端同步接口：
 
 ```http
+POST /internal/sync/weekly
 POST /internal/sync/zread
-Authorization: Bearer <ADMIN_API_KEY>
-```
-
-### AI Discovery 列表（v0.6 新增）
-
-```http
-GET /api/v1/discovery?category=all&page=1&page_size=30
-Authorization: Bearer <API_KEY>
-```
-
-`category` 支持 `all / agent / coding / mcp / rag / infra / model / skill`，默认 `all`；
-只返回最近 24 小时且分类状态为 `classified` 的仓库。响应 `data` 每项使用 endpoint 专用结构：
-
-```json
-{
-  "schema_version": 1,
-  "data": [
-    {
-      "repo": {
-        "gh_repo_id": 123,
-        "full_name": "owner/repo",
-        "owner": "owner",
-        "repo": "repo",
-        "stars": 42,
-        "forks": 3,
-        "watchers": 42,
-        "subscribers": 2,
-        "topics": ["ai", "agent"],
-        "is_archived": false,
-        "is_fork": false,
-        "is_private": false,
-        "open_issues": 1
-      },
-      "discovery": {
-        "hn_id": 123456,
-        "hn_title": "Show HN: ...",
-        "hn_url": "https://news.ycombinator.com/item?id=123456",
-        "hn_score": 18,
-        "hn_comments": 4,
-        "hn_published_at": "2026-06-11T08:30:00Z",
-        "category": "agent",
-        "classify_confidence": 0.91
-      }
-    }
-  ],
-  "meta": { "page": 1, "page_size": 30, "total": 1 }
-}
-```
-
-### AI Discovery 单仓库
-
-```http
-GET /api/v1/discovery/{owner}/{repo}
-Authorization: Bearer <API_KEY>
-```
-
-### AI Discovery 手动同步（Admin）
-
-```http
 POST /internal/sync/discovery
 Authorization: Bearer <ADMIN_API_KEY>
 ```
 
-此端点会消耗 GitHub/LLM 配额，因此不接受普通 `API_KEYS`。
+这些端点会消耗 GitHub 配额，因此不接受普通 `API_KEYS`。
 
 ### 健康检查 (不鉴权)
 
