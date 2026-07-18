@@ -12,6 +12,11 @@ type WeeklyIssue struct {
 	PublishedAt time.Time `json:"published_at"`
 	SourceURL   string    `json:"source_url"`
 	ParsedAt    time.Time `json:"parsed_at"`
+
+	// ContentHash 是周刊 Markdown 原文的稳定版本标识，仅供服务内部判断是否需要重入队。
+	// 不能使用本地文件 mtime：git clone、恢复备份或重新挂载卷都会改变 mtime，
+	// 但并不代表上游周刊内容发生了变化。
+	ContentHash string `json:"-"`
 }
 
 // Project 代表从周刊中提取的 GitHub 项目

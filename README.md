@@ -90,6 +90,12 @@ This project has completed the R-01 contract upgrade:
 - `POST /internal/imports` accepts only fixed sources with `manual_import_enabled=true`; the initial release allows only `ai_intelligence`.
 - Weekly supports multiple global pinned projects. The admin endpoint atomically replaces their order with the complete `gh_repo_ids` list.
 
+### Safe Startup and Weekly Versions
+
+- Only a brand-new empty database starts the initial `weekly / zread / discovery / hellogithub` collectors. A service restart, or a local instance opened from a production database backup, registers cron jobs but does not replay historical collectors. Scheduled jobs and explicit administrator sync endpoints remain available.
+- Weekly synchronization uses the SHA-256 hash of each Markdown source file as its version and batch idempotency component. Git clone timestamps, volume restores, and file copies therefore cannot create a false full re-import.
+- Existing databases receive the `content_hash` migration with an empty value. On the next successful weekly sync, each legacy issue is silently baselined to its current source content without parsing or GitHub enrichment; later content changes are queued normally. This intentionally favors preserving GitHub quota over replaying unknown pre-upgrade changes.
+
 ## Quick Start
 
 ### Local Development

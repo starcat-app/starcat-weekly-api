@@ -30,6 +30,7 @@ func (s *SQLiteStore) runMigrations() error {
 
 	migrations := []schemaMigration{
 		{version: 1, name: "weekly multi-source foundation", apply: migrateMultiSourceFoundation},
+		{version: 2, name: "weekly issue content hash", apply: migrateWeeklyIssueContentHash},
 	}
 	for _, migration := range migrations {
 		var applied int
@@ -55,6 +56,40 @@ func (s *SQLiteStore) runMigrations() error {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration v%d: %w", migration.version, err)
 		}
+	}
+	return nil
+}
+
+// migrateWeeklyIssueContentHash 为已发布数据库追加稳定的周刊内容版本。
+//
+// SQLite 的 ADD COLUMN 不支持所有版本的 IF NOT EXISTS，而全新数据库的基线 DDL
+// 已含该列，因此在事务内先检查列是否存在，保证新库和升级库都可重复执行。
+func migrateWeeklyIssueContentHash(tx *sql.Tx) error {
+	rows, err := tx.Query(`PRAGMA table_info(weekly_issues)`)
+	if err != nil {
+		return fmt.Errorf("inspect weekly_issues columns: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan weekly_issues column: %w", err)
+		}
+		if name == "content_hash" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate weekly_issues columns: %w", err)
+	}
+
+	if _, err := tx.Exec(`ALTER TABLE weekly_issues ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add weekly_issues.content_hash: %w", err)
 	}
 	return nil
 }

@@ -80,7 +80,8 @@ func (s *SQLiteStore) createSchema() error {
 			number       INTEGER PRIMARY KEY,
 			published_at TEXT NOT NULL,
 			source_url   TEXT NOT NULL,
-			parsed_at    TEXT NOT NULL
+			parsed_at    TEXT NOT NULL,
+			content_hash TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS weekly_extras (
 			gh_repo_id         INTEGER PRIMARY KEY REFERENCES github_repos(gh_repo_id) ON DELETE CASCADE,
@@ -130,6 +131,23 @@ func (s *SQLiteStore) createSchema() error {
 }
 
 func (s *SQLiteStore) Close() error { return s.db.Close() }
+
+// HasStartupData 判断当前库是否已有需要保留的同步状态。
+//
+// 服务启动时只有全新空库才允许自动启动所有 Collector；生产重启或把生产备份
+// 恢复到本地时，重复抓取历史数据会制造大量候选并消耗 GitHub 配额。任一来源
+// 已有事件、周刊期号或持久化批次，都说明该库不是可安全冷启动的空库。
+func (s *SQLiteStore) HasStartupData() (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM weekly_issues
+			UNION ALL SELECT 1 FROM repo_source_events
+			UNION ALL SELECT 1 FROM ingest_batches
+		)
+	`).Scan(&exists)
+	return exists, err
+}
 
 func (s *SQLiteStore) UpsertGitHubRepo(repo model.GitHubRepo) error {
 	return upsertGitHubRepo(s.db, repo, time.Now().UTC())
@@ -587,18 +605,19 @@ func (s *SQLiteStore) UpsertIssue(issue *model.WeeklyIssue) error {
 		issue.ParsedAt = time.Now().UTC()
 	}
 	_, err := s.db.Exec(`
-		INSERT INTO weekly_issues(number, published_at, source_url, parsed_at)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO weekly_issues(number, published_at, source_url, parsed_at, content_hash)
+		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(number) DO UPDATE SET
 			published_at=excluded.published_at,
 			source_url=excluded.source_url,
-			parsed_at=excluded.parsed_at
-	`, issue.Number, issue.PublishedAt.UTC().Format(time.RFC3339), issue.SourceURL, issue.ParsedAt.UTC().Format(time.RFC3339))
+			parsed_at=excluded.parsed_at,
+			content_hash=excluded.content_hash
+	`, issue.Number, issue.PublishedAt.UTC().Format(time.RFC3339), issue.SourceURL, issue.ParsedAt.UTC().Format(time.RFC3339), issue.ContentHash)
 	return err
 }
 
 func (s *SQLiteStore) GetIssues() ([]model.WeeklyIssue, error) {
-	rows, err := s.db.Query(`SELECT number, published_at, source_url, parsed_at FROM weekly_issues ORDER BY number DESC`)
+	rows, err := s.db.Query(`SELECT number, published_at, source_url, parsed_at, content_hash FROM weekly_issues ORDER BY number DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -615,7 +634,7 @@ func (s *SQLiteStore) GetIssues() ([]model.WeeklyIssue, error) {
 }
 
 func (s *SQLiteStore) GetIssue(number int) (*model.WeeklyIssue, error) {
-	row := s.db.QueryRow(`SELECT number, published_at, source_url, parsed_at FROM weekly_issues WHERE number=?`, number)
+	row := s.db.QueryRow(`SELECT number, published_at, source_url, parsed_at, content_hash FROM weekly_issues WHERE number=?`, number)
 	issue, err := scanIssue(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -1103,7 +1122,7 @@ func parseTime(raw string) time.Time {
 func scanIssue(scanner rowScanner) (model.WeeklyIssue, error) {
 	var issue model.WeeklyIssue
 	var published, parsed string
-	if err := scanner.Scan(&issue.Number, &published, &issue.SourceURL, &parsed); err != nil {
+	if err := scanner.Scan(&issue.Number, &published, &issue.SourceURL, &parsed, &issue.ContentHash); err != nil {
 		return issue, err
 	}
 	issue.PublishedAt = parseTime(published)

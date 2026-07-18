@@ -10,41 +10,81 @@ import (
 )
 
 func TestShouldSyncWeeklyIssueNewIssueAlwaysRuns(t *testing.T) {
-	if shouldSyncWeeklyIssue(nil, "/tmp/issue-1.md") {
-		return
+	if got := weeklyIssueSyncAction(nil, "hash"); got != weeklyIssueEnqueue {
+		t.Fatalf("action=%v want enqueue", got)
 	}
-	t.Fatal("new issue should sync")
 }
 
-func TestShouldSyncWeeklyIssueSkipsWhenFileUnchanged(t *testing.T) {
+func TestWeeklyIssueSyncActionSkipsUnchangedContentRegardlessOfMtime(t *testing.T) {
 	path := writeTempIssueFile(t, "unchanged")
-	parsedAt := time.Now().UTC().Add(time.Hour)
-	existing := &model.WeeklyIssue{Number: 1, ParsedAt: parsedAt}
-
-	if shouldSyncWeeklyIssue(existing, path) {
-		t.Fatal("unchanged issue should be skipped")
+	firstHash, err := weeklyIssueContentHash(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestShouldSyncWeeklyIssueRunsWhenFileModifiedAfterParse(t *testing.T) {
-	path := writeTempIssueFile(t, "modified")
-	parsedAt := time.Now().UTC().Add(-time.Hour)
-	existing := &model.WeeklyIssue{Number: 2, ParsedAt: parsedAt}
-
 	if err := os.Chtimes(path, time.Now(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if !shouldSyncWeeklyIssue(existing, path) {
-		t.Fatal("modified issue should sync")
+	secondHash, err := weeklyIssueContentHash(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstHash != secondHash {
+		t.Fatalf("content hash changed after mtime-only update: %q != %q", firstHash, secondHash)
+	}
+
+	existing := &model.WeeklyIssue{Number: 1, ContentHash: firstHash}
+	if got := weeklyIssueSyncAction(existing, secondHash); got != weeklyIssueSkip {
+		t.Fatalf("action=%v want skip", got)
 	}
 }
 
-func TestShouldSyncWeeklyIssueRunsWhenStatFails(t *testing.T) {
-	existing := &model.WeeklyIssue{Number: 3, ParsedAt: time.Now().UTC()}
-	if !shouldSyncWeeklyIssue(existing, filepath.Join(t.TempDir(), "missing.md")) {
-		t.Fatal("missing file should trigger conservative resync")
+func TestWeeklyIssueSyncActionEnqueuesOnlyWhenContentChanges(t *testing.T) {
+	existing := &model.WeeklyIssue{Number: 2, ContentHash: "old-hash"}
+	if got := weeklyIssueSyncAction(existing, "new-hash"); got != weeklyIssueEnqueue {
+		t.Fatalf("action=%v want enqueue", got)
 	}
 }
+
+func TestWeeklyIssueSyncActionBaselinesLegacyIssueWithoutReenqueue(t *testing.T) {
+	existing := &model.WeeklyIssue{Number: 3}
+	if got := weeklyIssueSyncAction(existing, "current-hash"); got != weeklyIssueBaseline {
+		t.Fatalf("action=%v want baseline", got)
+	}
+}
+
+func TestWeeklyBatchIdempotencyKeyUsesContentHash(t *testing.T) {
+	const contentHash = "a59b1f"
+	if got, want := weeklyBatchIdempotencyKey(123, contentHash), "weekly:123:"+contentHash; got != want {
+		t.Fatalf("key=%q want=%q", got, want)
+	}
+}
+
+func TestShouldRunInitialCollectors(t *testing.T) {
+	cases := []struct {
+		name  string
+		store any
+		want  bool
+	}{
+		{name: "empty sqlite state", store: startupDataStoreStub{}, want: true},
+		{name: "existing data", store: startupDataStoreStub{hasData: true}, want: false},
+		{name: "state query failure", store: startupDataStoreStub{err: os.ErrPermission}, want: false},
+		{name: "store without optional state", store: struct{}{}, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldRunInitialCollectors(tc.store); got != tc.want {
+				t.Fatalf("shouldRunInitialCollectors()=%v want=%v", got, tc.want)
+			}
+		})
+	}
+}
+
+type startupDataStoreStub struct {
+	hasData bool
+	err     error
+}
+
+func (s startupDataStoreStub) HasStartupData() (bool, error) { return s.hasData, s.err }
 
 func TestWeeklyAndZreadCollectorsBuildPersistentCandidates(t *testing.T) {
 	publishedAt := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)

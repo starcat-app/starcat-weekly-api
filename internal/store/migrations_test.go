@@ -44,6 +44,14 @@ func TestMultiSourceMigrationBackfillsLegacyEventsAndIsIdempotent(t *testing.T) 
 	assertRowCount(t, store.db, `SELECT COUNT(*) FROM source_catalog`, len(source.Definitions))
 	assertRowCount(t, store.db, `SELECT COUNT(*) FROM repo_source_events WHERE gh_repo_id=42`, 3)
 	assertRowCount(t, store.db, `SELECT COUNT(*) FROM schema_migrations WHERE version=1`, 1)
+	assertRowCount(t, store.db, `SELECT COUNT(*) FROM schema_migrations WHERE version=2`, 1)
+	issue, err := store.GetIssue(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issue == nil || issue.ContentHash != "" {
+		t.Fatalf("legacy issue content hash=%#v want empty baseline", issue)
+	}
 
 	var sourceTypes string
 	if err := store.db.QueryRow(`SELECT source_types_json FROM github_repos WHERE gh_repo_id=42`).Scan(&sourceTypes); err != nil {
@@ -58,6 +66,36 @@ func TestMultiSourceMigrationBackfillsLegacyEventsAndIsIdempotent(t *testing.T) 
 		t.Fatal(err)
 	}
 	assertRowCount(t, store.db, `SELECT COUNT(*) FROM repo_source_events WHERE gh_repo_id=42`, 3)
+}
+
+func TestHasStartupDataTracksPersistedState(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "startup-state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	hasData, err := store.HasStartupData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasData {
+		t.Fatal("new database must allow the initial collectors")
+	}
+
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	if err := store.UpsertIssue(&model.WeeklyIssue{
+		Number: 1, PublishedAt: now, SourceURL: "https://weekly.example/1", ParsedAt: now, ContentHash: "hash",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hasData, err = store.HasStartupData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasData {
+		t.Fatal("existing weekly issue must suppress startup collectors")
+	}
 }
 
 func seedLegacySourceRows(db *sql.DB, now time.Time) error {

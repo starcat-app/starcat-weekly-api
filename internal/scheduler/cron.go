@@ -3,6 +3,7 @@ package scheduler
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"os"
@@ -129,6 +130,11 @@ func (s *Scheduler) Start() {
 
 	s.cron.Start()
 	log.Printf("[scheduler] cron 已启动 (weekly Mon 00:00 UTC + zread %s + discovery %s + hellogithub %s)", s.zreadCron, s.discoveryCron, s.helloCron)
+
+	if !shouldRunInitialCollectors(s.store) {
+		log.Println("[scheduler] 检测到已有持久化数据，跳过启动首次同步；定时 cron 与管理员手动同步仍可用")
+		return
+	}
 
 	go func() {
 		log.Println("[scheduler] 首次 weekly 同步...")
@@ -307,8 +313,29 @@ func (s *Scheduler) sync() []string {
 	var allRepos []string
 
 	for i, issue := range issues {
-		existing, _ := s.store.GetIssue(issue.Number)
-		if !shouldSyncWeeklyIssue(existing, issue.Path) {
+		contentHash, err := weeklyIssueContentHash(issue.Path)
+		if err != nil {
+			log.Printf("[scheduler] hash issue-%d: %v", issue.Number, err)
+			continue
+		}
+		existing, err := s.store.GetIssue(issue.Number)
+		if err != nil {
+			log.Printf("[scheduler] load issue-%d: %v", issue.Number, err)
+			continue
+		}
+
+		switch weeklyIssueSyncAction(existing, contentHash) {
+		case weeklyIssueSkip:
+			skipped++
+			continue
+		case weeklyIssueBaseline:
+			// 已发布数据库没有哈希时只记录当前内容为基线，不解析或入队。
+			// 这样升级或恢复备份不会将全部历史周刊再次送进 GitHub Worker。
+			existing.ContentHash = contentHash
+			if err := s.store.UpsertIssue(existing); err != nil {
+				log.Printf("[scheduler] baseline issue-%d: %v", issue.Number, err)
+				continue
+			}
 			skipped++
 			continue
 		}
@@ -326,6 +353,7 @@ func (s *Scheduler) sync() []string {
 			PublishedAt: publishedAt,
 			SourceURL:   srcURL,
 			ParsedAt:    time.Now().UTC(),
+			ContentHash: contentHash,
 		}
 		candidates := weeklyCandidates(projects, issue.Number, publishedAt, srcURL)
 		for j := range projects {
@@ -333,14 +361,9 @@ func (s *Scheduler) sync() []string {
 			allRepos = append(allRepos, project.RepoOwner+"/"+project.RepoName)
 		}
 		if len(candidates) > 0 {
-			info, _ := os.Stat(issue.Path)
-			version := weeklyIssue.ParsedAt.UnixNano()
-			if info != nil {
-				version = info.ModTime().UTC().UnixNano()
-			}
 			acceptance, err := s.enqueuer.Enqueue(model.EnqueueBatchRequest{
 				SourceCode: model.SourceWeekly, Kind: model.IngestKindCollector,
-				IdempotencyKey: fmt.Sprintf("weekly:%d:%d", issue.Number, version), Candidates: candidates,
+				IdempotencyKey: weeklyBatchIdempotencyKey(issue.Number, contentHash), Candidates: candidates,
 			})
 			if err != nil {
 				log.Printf("[scheduler] enqueue issue-%d: %v", issue.Number, err)
@@ -400,21 +423,62 @@ func weeklyCandidates(projects []model.Project, issueNumber int, publishedAt tim
 	return candidates
 }
 
-// shouldSyncWeeklyIssue 判断某期周刊是否要在本轮 sync 中 parse + enrich。
+type weeklyIssueAction uint8
+
+const (
+	weeklyIssueSkip weeklyIssueAction = iota
+	weeklyIssueEnqueue
+	weeklyIssueBaseline
+)
+
+// weeklyIssueSyncAction 只依赖 Markdown 内容，而不依赖 git 文件的本地 mtime。
 //
-// redeploy 不得无条件重跑「最近 N 期」——会打满 GitHub 配额并拖住其它数据源。
-// 仅在这些情况重跑：① DB 无该期记录（新刊 / 空库）；② 本地 md 自上次 ParsedAt 后有改动
-// （git pull 更新了文件 mtime）。
-func shouldSyncWeeklyIssue(existing *model.WeeklyIssue, issuePath string) bool {
+// 历史库的 content_hash 为空时采用一次性静默基线：保留历史数据、写入当前哈希，
+// 但不重放 parse + GitHub enrich。之后只有上游内容真实变化才重新入队。
+func weeklyIssueSyncAction(existing *model.WeeklyIssue, contentHash string) weeklyIssueAction {
 	if existing == nil {
-		return true
+		return weeklyIssueEnqueue
 	}
-	info, err := os.Stat(issuePath)
+	if existing.ContentHash == "" {
+		return weeklyIssueBaseline
+	}
+	if existing.ContentHash == contentHash {
+		return weeklyIssueSkip
+	}
+	return weeklyIssueEnqueue
+}
+
+// weeklyIssueContentHash 计算周刊源文件的稳定内容版本。
+func weeklyIssueContentHash(issuePath string) (string, error) {
+	content, err := os.ReadFile(issuePath)
 	if err != nil {
-		// stat 失败时保守重跑，避免漏掉新内容。
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(content)), nil
+}
+
+func weeklyBatchIdempotencyKey(issueNumber int, contentHash string) string {
+	return fmt.Sprintf("weekly:%d:%s", issueNumber, contentHash)
+}
+
+type startupDataStore interface {
+	HasStartupData() (bool, error)
+}
+
+// shouldRunInitialCollectors 仅让从未写入过业务状态的空库执行启动抓取。
+// 实际 SQLite 实现查询持久化状态；没有实现该可选能力的测试/替换存储维持旧行为。
+func shouldRunInitialCollectors(s any) bool {
+	startupStore, ok := s.(startupDataStore)
+	if !ok {
 		return true
 	}
-	return info.ModTime().UTC().After(existing.ParsedAt.UTC())
+	hasData, err := startupStore.HasStartupData()
+	if err != nil {
+		// 无法确认库是否为空时宁可等待 cron 或管理员显式触发，避免意外耗尽配额。
+		log.Printf("[scheduler] 检查启动数据状态失败，跳过首次同步: %v", err)
+		return false
+	}
+	return !hasData
 }
 
 func issuePublishedAt(path string) time.Time {
