@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
 )
 
 const defaultHNBaseURL = "https://hacker-news.firebaseio.com/v0"

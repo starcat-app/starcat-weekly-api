@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
 )
 
 const helloGitHubBackfillScanInterval = 15 * time.Minute

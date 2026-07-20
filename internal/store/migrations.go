@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/source"
+	"github.com/starcat-app/starcat-weekly-api/internal/source"
 )
 
 type schemaMigration struct {

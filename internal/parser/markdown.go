@@ -11,7 +11,7 @@ import (
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
 
-	"github.com/dong4j/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
 )
 
 // githubURLRe 匹配 GitHub 仓库 URL: https://github.com/owner/repo

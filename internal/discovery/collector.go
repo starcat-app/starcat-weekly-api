@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
 )
 
 type submissionFetcher interface {

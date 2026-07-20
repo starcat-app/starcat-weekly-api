@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/tokenpool"
+	"github.com/starcat-app/starcat-weekly-api/internal/tokenpool"
 )
 
 // ErrRepoNotFound GitHub 返回 404 时返回此错误，调用方可用 errors.Is 判断。

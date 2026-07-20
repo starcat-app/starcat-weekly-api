@@ -34,7 +34,7 @@
 ### 2. 克隆到本地
 
 ```bash
-git clone https://github.com/dong4j/starcat-weekly-api.git
+git clone https://github.com/starcat-app/starcat-weekly-api.git
 cd starcat-weekly-api
 ```
 
@@ -174,12 +174,12 @@ docs(readme): update deployment instructions
 
 ## 第一次贡献？
 
-可以从 [good first issue](https://github.com/dong4j/starcat-weekly-api/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) 标签的 Issue 入手。
+可以从 [good first issue](https://github.com/starcat-app/starcat-weekly-api/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) 标签的 Issue 入手。
 
 ## 联系方式
 
-- 提交 [Issue](https://github.com/dong4j/starcat-weekly-api/issues)
-- 加入 [Discussions](https://github.com/dong4j/starcat-weekly-api/discussions)
+- 提交 [Issue](https://github.com/starcat-app/starcat-weekly-api/issues)
+- 加入 [Discussions](https://github.com/starcat-app/starcat-weekly-api/discussions)
 - 邮件: [dong4j@gmail.com](mailto:dong4j@gmail.com)
 
 感谢你的贡献！💖

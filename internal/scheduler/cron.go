@@ -15,14 +15,14 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"github.com/dong4j/starcat-weekly-api/internal/discovery"
-	"github.com/dong4j/starcat-weekly-api/internal/fetcher"
-	"github.com/dong4j/starcat-weekly-api/internal/model"
-	"github.com/dong4j/starcat-weekly-api/internal/notifier"
-	"github.com/dong4j/starcat-weekly-api/internal/parser"
-	weeklysource "github.com/dong4j/starcat-weekly-api/internal/source"
-	"github.com/dong4j/starcat-weekly-api/internal/spider"
-	"github.com/dong4j/starcat-weekly-api/internal/store"
+	"github.com/starcat-app/starcat-weekly-api/internal/discovery"
+	"github.com/starcat-app/starcat-weekly-api/internal/fetcher"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/notifier"
+	"github.com/starcat-app/starcat-weekly-api/internal/parser"
+	weeklysource "github.com/starcat-app/starcat-weekly-api/internal/source"
+	"github.com/starcat-app/starcat-weekly-api/internal/spider"
+	"github.com/starcat-app/starcat-weekly-api/internal/store"
 )
 
 // Scheduler 同步调度器

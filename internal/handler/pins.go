@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/model"
-	"github.com/dong4j/starcat-weekly-api/internal/store"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/store"
 )
 
 type pinsRepository interface {

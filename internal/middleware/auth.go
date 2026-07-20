@@ -14,7 +14,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/dong4j/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
 )
 
 // BearerAuth 持有 API Key 白名单，验证 Bearer Token。

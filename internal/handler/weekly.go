@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/store"
+	"github.com/starcat-app/starcat-weekly-api/internal/store"
 )
 
 // WeeklyHandler keeps the two manual sync entrypoints.

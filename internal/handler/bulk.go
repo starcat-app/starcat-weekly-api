@@ -35,8 +35,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/model"
-	"github.com/dong4j/starcat-weekly-api/internal/store"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/store"
 )
 
 // bulkData 是 /api/v1/repos/bulk envelope 的 data 字段类型。

@@ -4,7 +4,7 @@ package store
 import (
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
 )
 
 // Store 数据存储接口，便于 mock 测试和未来切换存储后端

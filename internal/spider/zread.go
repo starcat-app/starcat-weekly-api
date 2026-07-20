@@ -16,8 +16,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/model"
-	"github.com/dong4j/starcat-weekly-api/internal/store"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/store"
 )
 
 // ZreadSpider 拉取 zread 公开周 trending 端点，写入 zread_trending 表。

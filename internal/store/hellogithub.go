@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
 )
 
 // CreateHelloGitHubBackfill 在单个事务中创建不含 item 的控制批次。

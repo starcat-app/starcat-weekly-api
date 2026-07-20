@@ -15,16 +15,16 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/dong4j/starcat-weekly-api/internal/discovery"
-	"github.com/dong4j/starcat-weekly-api/internal/github"
-	"github.com/dong4j/starcat-weekly-api/internal/handler"
-	"github.com/dong4j/starcat-weekly-api/internal/ingest"
-	"github.com/dong4j/starcat-weekly-api/internal/middleware"
-	"github.com/dong4j/starcat-weekly-api/internal/notifier"
-	"github.com/dong4j/starcat-weekly-api/internal/scheduler"
-	weeklysource "github.com/dong4j/starcat-weekly-api/internal/source"
-	"github.com/dong4j/starcat-weekly-api/internal/store"
-	"github.com/dong4j/starcat-weekly-api/internal/tokenpool"
+	"github.com/starcat-app/starcat-weekly-api/internal/discovery"
+	"github.com/starcat-app/starcat-weekly-api/internal/github"
+	"github.com/starcat-app/starcat-weekly-api/internal/handler"
+	"github.com/starcat-app/starcat-weekly-api/internal/ingest"
+	"github.com/starcat-app/starcat-weekly-api/internal/middleware"
+	"github.com/starcat-app/starcat-weekly-api/internal/notifier"
+	"github.com/starcat-app/starcat-weekly-api/internal/scheduler"
+	weeklysource "github.com/starcat-app/starcat-weekly-api/internal/source"
+	"github.com/starcat-app/starcat-weekly-api/internal/store"
+	"github.com/starcat-app/starcat-weekly-api/internal/tokenpool"
 )
 
 func main() {

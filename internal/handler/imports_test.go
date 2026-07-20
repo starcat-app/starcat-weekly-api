@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dong4j/starcat-weekly-api/internal/ingest"
-	"github.com/dong4j/starcat-weekly-api/internal/middleware"
-	"github.com/dong4j/starcat-weekly-api/internal/model"
-	"github.com/dong4j/starcat-weekly-api/internal/store"
+	"github.com/starcat-app/starcat-weekly-api/internal/ingest"
+	"github.com/starcat-app/starcat-weekly-api/internal/middleware"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/store"
 )
 
 func TestImportsHandlerAcceptsWholeBatchWithoutGitHubCall(t *testing.T) {

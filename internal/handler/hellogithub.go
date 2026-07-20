@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
 )
 
 // HelloGitHubHandler 暴露精选增量同步入口；具体抓取在 scheduler goroutine 中执行。

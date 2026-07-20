@@ -4,7 +4,7 @@
 // 展示、运维入口和测试；这样 AI Skill 无法把任意字符串写成用户可见分类。
 package source
 
-import "github.com/dong4j/starcat-weekly-api/internal/model"
+import "github.com/starcat-app/starcat-weekly-api/internal/model"
 
 const (
 	IngestModeCrawler = "crawler"

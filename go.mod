@@ -1,4 +1,4 @@
-module github.com/dong4j/starcat-weekly-api
+module github.com/starcat-app/starcat-weekly-api
 
 go 1.25.0
 

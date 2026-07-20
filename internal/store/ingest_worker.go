@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
 )
 
 // ClaimIngestItem 领取一个当前可执行候选并写入租约。

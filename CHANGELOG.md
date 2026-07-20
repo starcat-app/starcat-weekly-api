@@ -102,6 +102,6 @@
 - 贡献指南和变更日志
 - 内部版本号包 (`internal/version`, 暴露 `version.Version` 常量)
 
-[Unreleased]: https://github.com/dong4j/starcat-weekly-api/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/dong4j/starcat-weekly-api/compare/v1.0.0...v0.5.0
-[1.0.0]: https://github.com/dong4j/starcat-weekly-api/releases/tag/v1.0.0
+[Unreleased]: https://github.com/starcat-app/starcat-weekly-api/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/starcat-app/starcat-weekly-api/compare/v1.0.0...v0.5.0
+[1.0.0]: https://github.com/starcat-app/starcat-weekly-api/releases/tag/v1.0.0

@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
 )
 
 // fakeBulkStore 是 store.Store 的最小实现,只支持 QueryAllRepos / GetAggregatedLanguages

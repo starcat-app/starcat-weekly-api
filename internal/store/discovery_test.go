@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dong4j/starcat-weekly-api/internal/model"
+	"github.com/starcat-app/starcat-weekly-api/internal/model"
 )
 
 func TestDiscoveryKeepsSubmissionsSeparateAndQueriesLatest(t *testing.T) {
