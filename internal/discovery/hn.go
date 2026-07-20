@@ -38,7 +38,7 @@ func NewHNClient(client *http.Client) *HNClient {
 	return &HNClient{
 		baseURL:   defaultHNBaseURL,
 		client:    client,
-		userAgent: "Starcat-Discovery-Bot/1.0 (+https://github.com/dong4j/starcat)",
+		userAgent: "Starcat-Discovery-Bot/1.0 (+https://github.com/starcat-app/starcat-weekly-api)",
 	}
 }
 
