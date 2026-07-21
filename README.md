@@ -166,7 +166,7 @@ All business endpoints require the `Authorization: Bearer <API_KEY>` request hea
 GET /api/v1/ping
 ```
 
-This endpoint requires Bearer authentication. A successful response contains `data.service = "weekly"` and `data.ok = true`; Starcat uses it specifically for the "Test Connection" action in Settings.
+This endpoint requires Bearer authentication. A successful response contains `data.service = "weekly"`, the release-tag-derived `data.version`, and `data.ok = true`; Starcat uses it specifically for the "Test Connection" action in Settings.
 
 ### Aggregated Repository List
 

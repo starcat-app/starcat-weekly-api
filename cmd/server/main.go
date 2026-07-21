@@ -25,6 +25,7 @@ import (
 	weeklysource "github.com/starcat-app/starcat-weekly-api/internal/source"
 	"github.com/starcat-app/starcat-weekly-api/internal/store"
 	"github.com/starcat-app/starcat-weekly-api/internal/tokenpool"
+	"github.com/starcat-app/starcat-weekly-api/internal/version"
 )
 
 func main() {
@@ -138,7 +139,7 @@ func main() {
 
 	// R-03 (2026-06-11): /api/v1/ping 专门给 Starcat 客户端「测试连接」按钮用，
 	// 在 middleware 后面挂——同时验证服务可达 + Bearer Key 正确。详见 handler/ping.go。
-	mux.Handle("GET /api/v1/ping", authMW.Wrap(handler.HandlePingV1("weekly")))
+	mux.Handle("GET /api/v1/ping", authMW.Wrap(handler.HandlePingV1(version.Service, version.Version)))
 
 	// API V1 Endpoints (authenticated). R-04 removes old weekly/zread/discovery public routes.
 	mux.Handle("GET /api/v1/repos", authMW.Wrap(http.HandlerFunc(rh.HandleListV1)))
@@ -180,7 +181,7 @@ func main() {
 	}()
 
 	// Start HTTP server
-	log.Printf("starcat-weekly-api starting on port %s", port)
+	log.Printf("starcat-weekly-api %s starting on port %s", version.Version, port)
 	log.Printf("V1 Endpoints (authenticated):")
 	log.Printf("  GET  /api/v1/ping               - Connectivity probe for Starcat client")
 	log.Printf("  GET  /api/v1/repos              - List aggregated repos (paginated)")

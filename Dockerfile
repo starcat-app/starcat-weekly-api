@@ -5,6 +5,8 @@
 # Go 版本由项目 go.mod 决定 (1.25.0)
 FROM golang:1.25-alpine AS builder
 
+ARG VERSION=0.0.0-dev
+
 # 设置工作目录
 WORKDIR /app
 
@@ -18,9 +20,9 @@ COPY . .
 # CGO_ENABLED=0 编译为静态二进制
 #   关键: modernc.org/sqlite 是纯 Go 实现 (把 SQLite C 翻译成 Go),
 #   不需要 CGO, 但编译期会拉很多 Go 翻译代码, build 时间较长 (1-2 分钟)
-# -ldflags="-w -s" 去除调试信息, 减小二进制体积
+# VERSION 由发布 tag 注入；默认值只用于本地开发构建。
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-w -s" \
+    -ldflags="-w -s -X github.com/starcat-app/starcat-weekly-api/internal/version.Version=${VERSION}" \
     -o /app/bin/server \
     ./cmd/server/
 

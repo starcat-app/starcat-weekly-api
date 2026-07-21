@@ -159,7 +159,7 @@ fly deploy
 GET /api/v1/ping
 ```
 
-该端点需要 Bearer Auth，成功时返回 `data.service = "weekly"` 与 `data.ok = true`；它是 Starcat 设置页“测试连接”使用的专用接口。
+该端点需要 Bearer Auth，成功时返回 `data.service = "weekly"`、由发布 tag 注入的 `data.version` 与 `data.ok = true`；它是 Starcat 设置页“测试连接”使用的专用接口。
 
 ### 聚合项目列表
 
