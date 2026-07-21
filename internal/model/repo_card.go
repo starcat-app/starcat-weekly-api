@@ -5,13 +5,14 @@
 // 的多处实现，前端 Swift 用单一 Codable 同时解码三个 endpoint 返回值。
 //
 // 字段严格分两层（详见 supports/docs/R-01-总体设计.md §3.9）：
-//   核心字段（顶层）: GitHub /repos/{o}/{r} 原生语义
-//   扩展段（嵌套子对象）: trending / weekly / sharing 场景发现型语义
+//
+//	核心字段（顶层）: GitHub /repos/{o}/{r} 原生语义
+//	扩展段（嵌套子对象）: trending / weekly / sharing 场景发现型语义
 //
 // 红线：
-//   1. 非 Repo metadata 字段不能放顶层
-//   2. 不能把扩展段字段提升到顶层
-//   3. 不能在扩展段塞非本场景语义的字段
+//  1. 非 Repo metadata 字段不能放顶层
+//  2. 不能把扩展段字段提升到顶层
+//  3. 不能在扩展段塞非本场景语义的字段
 //
 // 本仓与 trending-api 的差异（P1-3a 修订前）：
 //   - 字段名 `HtmlURL` → `HTMLURL`（Go 命名规范，对齐 trending-api）

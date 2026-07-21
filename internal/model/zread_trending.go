@@ -17,11 +17,11 @@ package model
 //  4. 元数据 fetched_at
 type ZreadTrending struct {
 	// zread 拉取原生（11）
-	WeekLabel     string `json:"week_label"`     // "This Week" / "Last Week" / ""（历史周）
-	WeekStart     string `json:"week_start"`     // "2026-06-08" ISO 8601 推断后
-	WeekEnd       string `json:"week_end"`       // "2026-06-14" ISO 8601 推断后
-	RankInWeek    int    `json:"rank"`           // 该 repo 在本组里的序号
-	RepoID        string `json:"repo_id"`        // zread UUID
+	WeekLabel     string `json:"week_label"` // "This Week" / "Last Week" / ""（历史周）
+	WeekStart     string `json:"week_start"` // "2026-06-08" ISO 8601 推断后
+	WeekEnd       string `json:"week_end"`   // "2026-06-14" ISO 8601 推断后
+	RankInWeek    int    `json:"rank"`       // 该 repo 在本组里的序号
+	RepoID        string `json:"repo_id"`    // zread UUID
 	Owner         string `json:"owner"`
 	Name          string `json:"name"`
 	HTMLURL       string `json:"html_url"`
@@ -61,9 +61,9 @@ type ZreadTrending struct {
 // 顶层 envelope 的 schema_version / meta 不变；通过 data 内嵌的 week_label
 // 区分 zread 数据源（不污染 envelope.go 共享件）。
 type ZreadTrendingEnvelope struct {
-	WeekLabel string            `json:"week_label"`
-	WeekStart string            `json:"week_start"`
-	WeekEnd   string            `json:"week_end"`
-	FetchedAt string            `json:"fetched_at"`
-	Items     []ZreadTrending   `json:"items"`
+	WeekLabel string          `json:"week_label"`
+	WeekStart string          `json:"week_start"`
+	WeekEnd   string          `json:"week_end"`
+	FetchedAt string          `json:"fetched_at"`
+	Items     []ZreadTrending `json:"items"`
 }
