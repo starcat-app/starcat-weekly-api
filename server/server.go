@@ -15,6 +15,7 @@ import (
 
 	kitenv "github.com/starcat-app/starcat-api-kit/env"
 	kitmetrics "github.com/starcat-app/starcat-api-kit/metrics"
+	"github.com/starcat-app/starcat-weekly-api/internal/dailyradar"
 	"github.com/starcat-app/starcat-weekly-api/internal/discovery"
 	"github.com/starcat-app/starcat-weekly-api/internal/github"
 	"github.com/starcat-app/starcat-weekly-api/internal/handler"
@@ -32,20 +33,22 @@ const defaultPort = "5003"
 
 // Options 控制 weekly 服务装配。聚合网关可显式传入，单仓部署通常用 FromEnv。
 type Options struct {
-	Port                   string
-	DBPath                 string
-	MetricsStoreFile       string
-	RepoDir                string
-	APIKeys                []string
-	AdminAPIKeys           []string
-	GithubTokens           []string
-	DiscoveryHNLim         int
-	HelloGitHubMaxPages    int
-	DiscoveryCron          string
-	HelloGitHubCron        string
-	HelloGitHubReconcile   string
-	ZreadTrendingCron      string
-	SkipListenLogEndpoints bool
+	Port                         string
+	DBPath                       string
+	MetricsStoreFile             string
+	RepoDir                      string
+	APIKeys                      []string
+	AdminAPIKeys                 []string
+	GithubTokens                 []string
+	DiscoveryHNLim               int
+	HelloGitHubMaxPages          int
+	DiscoveryCron                string
+	HelloGitHubCron              string
+	HelloGitHubReconcile         string
+	ZreadTrendingCron            string
+	SkipListenLogEndpoints       bool
+	DailyRadarCoverHosts         []string
+	DailyRadarSourceRepositories []string
 }
 
 // Service 是已装配的 weekly HTTP 服务（含 ingest Worker、HelloGitHub backfill 与 cron 调度器）。
@@ -57,6 +60,7 @@ type Service struct {
 	stopWorker context.CancelFunc
 	metrics    *kitmetrics.Collector
 	closeOnce  sync.Once
+	radarDone  chan struct{}
 }
 
 // Name 返回聚合网关识别用的稳定服务名。
@@ -84,19 +88,21 @@ func FromEnv() (*Service, error) {
 	}
 
 	opt := Options{
-		Port:                 kitenv.OrDefault("PORT", defaultPort),
-		DBPath:               kitenv.OrDefault("STORE_FILE", "weekly.db"),
-		MetricsStoreFile:     kitenv.OrDefault("METRICS_STORE_FILE", "weekly-metrics.db"),
-		RepoDir:              kitenv.OrDefault("REPO_DIR", ".weekly-repo"),
-		APIKeys:              apiKeys,
-		AdminAPIKeys:         adminKeys,
-		GithubTokens:         githubTokens,
-		DiscoveryHNLim:       kitenv.Int("DISCOVERY_HN_LIMIT", 30),
-		HelloGitHubMaxPages:  kitenv.Int("HELLOGITHUB_FEATURED_MAX_PAGES", 3),
-		DiscoveryCron:        kitenv.OrDefault("DISCOVERY_CRON", "17 * * * *"),
-		HelloGitHubCron:      kitenv.OrDefault("HELLOGITHUB_CRON", "31 6 * * *"),
-		HelloGitHubReconcile: kitenv.OrDefault("HELLOGITHUB_RECONCILE_CRON", "29 7 29 * *"),
-		ZreadTrendingCron:    kitenv.OrDefault("ZREAD_TRENDING_CRON", "0 6 * * *"),
+		Port:                         kitenv.OrDefault("PORT", defaultPort),
+		DBPath:                       kitenv.OrDefault("STORE_FILE", "weekly.db"),
+		MetricsStoreFile:             kitenv.OrDefault("METRICS_STORE_FILE", "weekly-metrics.db"),
+		RepoDir:                      kitenv.OrDefault("REPO_DIR", ".weekly-repo"),
+		APIKeys:                      apiKeys,
+		AdminAPIKeys:                 adminKeys,
+		GithubTokens:                 githubTokens,
+		DiscoveryHNLim:               kitenv.Int("DISCOVERY_HN_LIMIT", 30),
+		HelloGitHubMaxPages:          kitenv.Int("HELLOGITHUB_FEATURED_MAX_PAGES", 3),
+		DiscoveryCron:                kitenv.OrDefault("DISCOVERY_CRON", "17 * * * *"),
+		HelloGitHubCron:              kitenv.OrDefault("HELLOGITHUB_CRON", "31 6 * * *"),
+		HelloGitHubReconcile:         kitenv.OrDefault("HELLOGITHUB_RECONCILE_CRON", "29 7 29 * *"),
+		ZreadTrendingCron:            kitenv.OrDefault("ZREAD_TRENDING_CRON", "0 6 * * *"),
+		DailyRadarCoverHosts:         kitenv.LookupCSV("DAILY_RADAR_COVER_HOSTS"),
+		DailyRadarSourceRepositories: kitenv.LookupCSV("DAILY_RADAR_SOURCE_REPOSITORIES"),
 	}
 	return New(opt)
 }
@@ -157,6 +163,10 @@ func New(opt Options) (*Service, error) {
 	workerContext, stopWorker := context.WithCancel(context.Background())
 	go ingestWorker.Run(workerContext)
 	go helloGitHubBackfill.Run(workerContext)
+	radarWorker := dailyradar.NewWorker(s, ghClient)
+	radarDone := make(chan struct{})
+	go func() { defer close(radarDone); radarWorker.Run(workerContext) }()
+	radarHandler := dailyradar.NewHandler(s, radarWorker, opt.DailyRadarCoverHosts, opt.DailyRadarSourceRepositories)
 
 	sch := scheduler.New(s, ingestService, wikiNotifier, opt.RepoDir, discoveryCollector, helloGitHubCollector,
 		opt.DiscoveryCron, opt.HelloGitHubCron, opt.HelloGitHubReconcile, opt.ZreadTrendingCron)
@@ -175,6 +185,13 @@ func New(opt Options) (*Service, error) {
 	mux.HandleFunc("GET /healthz", wh.Healthz) // Health check (unauthenticated)
 
 	mux.Handle("GET /api/v1/ping", authMW.Wrap(handler.HandlePingV1(version.Service, version.Version)))
+	mux.Handle("GET /api/v1/daily-radar/catalog", authMW.Wrap(http.HandlerFunc(radarHandler.Catalog)))
+	mux.Handle("GET /api/v1/daily-radar/dates", authMW.Wrap(http.HandlerFunc(radarHandler.Dates)))
+	mux.Handle("GET /api/v1/daily-radar/reports", authMW.Wrap(http.HandlerFunc(radarHandler.Reports)))
+	mux.Handle("GET /api/v1/daily-radar/reports/{id}", authMW.Wrap(http.HandlerFunc(radarHandler.Detail)))
+	mux.Handle("POST /internal/daily-radar/imports", adminAuthMW.Wrap(http.HandlerFunc(radarHandler.Import)))
+	mux.Handle("GET /internal/daily-radar/imports/{id}", adminAuthMW.Wrap(http.HandlerFunc(radarHandler.Batch)))
+	mux.Handle("POST /internal/daily-radar/repairs/source-repositories", adminAuthMW.Wrap(http.HandlerFunc(radarHandler.RepairSourceRepositories)))
 
 	mux.Handle("GET /api/v1/repos", authMW.Wrap(http.HandlerFunc(rh.HandleListV1)))
 	mux.Handle("GET /api/v1/repos/bulk", authMW.Wrap(handler.HandleBulkV1(s, bulkCache)))
@@ -231,6 +248,7 @@ func New(opt Options) (*Service, error) {
 		scheduler:  sch,
 		stopWorker: stopWorker,
 		metrics:    metricsCollector,
+		radarDone:  radarDone,
 	}, nil
 }
 
@@ -247,6 +265,10 @@ func (svc *Service) Close() error {
 	svc.closeOnce.Do(func() {
 		if svc.stopWorker != nil {
 			svc.stopWorker()
+		}
+		// 日报核验遵循 context 取消；等其退出再关库，避免丢失已领取任务的停机语义。
+		if svc.radarDone != nil {
+			<-svc.radarDone
 		}
 		if svc.scheduler != nil {
 			svc.scheduler.Stop()

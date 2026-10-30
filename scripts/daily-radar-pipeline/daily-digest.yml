@@ -1,0 +1,121 @@
+# 安装为受控 fork 的 .github/workflows/daily-digest.yml，替换上游同名流程。
+# 首轮端到端验收后启用每日调度；上海业务日期用于生成身份，实际完成时间可能延后。
+name: Starcat Daily Radar
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "37 22 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: starcat-daily-radar
+  cancel-in-progress: false
+
+jobs:
+  generate-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # 只运行受控 fork 的默认分支，避免从其他分支发布不同的生成逻辑。
+    if: github.ref_name == github.event.repository.default_branch
+    steps:
+      - name: Checkout controlled source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Validate publishing configuration
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DAILY_RADAR_ADMIN_API_KEY: ${{ secrets.DAILY_RADAR_ADMIN_API_KEY }}
+          DAILY_RADAR_API_URL: ${{ vars.DAILY_RADAR_API_URL || 'https://starcat-api.fly.dev' }}
+        run: |
+          node --input-type=module <<'NODE'
+          for (const name of ["DEEPSEEK_API_KEY", "DAILY_RADAR_ADMIN_API_KEY", "DAILY_RADAR_API_URL"]) {
+            if (!process.env[name]) throw new Error(`${name} is required`);
+          }
+          const url = new URL(process.env.DAILY_RADAR_API_URL);
+          if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+            throw new Error("DAILY_RADAR_API_URL must be an HTTPS origin");
+          }
+          NODE
+
+      - name: Determine today's generation state
+        id: edition
+        run: |
+          DATE=$(TZ=Asia/Shanghai date +%Y-%m-%d)
+          COMMIT=$(git rev-parse HEAD)
+          printf 'date=%s\n' "$DATE" >> "$GITHUB_OUTPUT"
+          node scripts/starcat/publish.mjs status --commit "$COMMIT" --date "$DATE" >> "$GITHUB_OUTPUT"
+
+      - name: Verify publication adapter
+        run: node --test scripts/starcat/publish.test.mjs
+
+      - name: Install generator dependencies
+        if: steps.edition.outputs.ready != 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare current-day generation
+        if: steps.edition.outputs.ready != 'true'
+        env:
+          EDITION_DATE: ${{ steps.edition.outputs.date }}
+        run: |
+          SEQUENCE=$((GITHUB_RUN_NUMBER * 1000 + GITHUB_RUN_ATTEMPT))
+          node scripts/starcat/publish.mjs prepare --date "$EDITION_DATE" --sequence "$SEQUENCE"
+
+      - name: Generate reports using DeepSeek
+        if: steps.edition.outputs.ready != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LLM_PROVIDER: deepseek
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_MODEL: deepseek-flash
+          PRODUCTHUNT_TOKEN: ${{ secrets.PRODUCTHUNT_TOKEN }}
+          # 仅写日报文件，不创建 Issues，也不触发上游通知。
+          DIGEST_REPO: ""
+        run: pnpm start
+
+      - name: Seal successful generation and update indexes
+        if: steps.edition.outputs.ready != 'true'
+        env:
+          EDITION_DATE: ${{ steps.edition.outputs.date }}
+        run: |
+          node scripts/starcat/publish.mjs seal --date "$EDITION_DATE"
+          pnpm manifest
+
+      - name: Commit and push generated files before publication
+        if: steps.edition.outputs.ready != 'true'
+        env:
+          EDITION_DATE: ${{ steps.edition.outputs.date }}
+          TARGET_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "digests/$EDITION_DATE" digests/web-state.json manifest.json feed.xml
+          git diff --cached --quiet && { echo "Generation produced no committed changes"; exit 1; }
+          git commit -m "digest: ${EDITION_DATE} Starcat daily radar"
+          git pull --rebase origin "$TARGET_BRANCH"
+          git push origin "HEAD:$TARGET_BRANCH"
+
+      - name: Publish committed reports and wait for completion
+        env:
+          EDITION_DATE: ${{ steps.edition.outputs.date }}
+          DAILY_RADAR_API_URL: ${{ vars.DAILY_RADAR_API_URL || 'https://starcat-api.fly.dev' }}
+          DAILY_RADAR_ADMIN_API_KEY: ${{ secrets.DAILY_RADAR_ADMIN_API_KEY }}
+        run: |
+          COMMIT=$(git rev-parse HEAD)
+          node scripts/starcat/publish.mjs publish --date "$EDITION_DATE" --commit "$COMMIT" --apply
