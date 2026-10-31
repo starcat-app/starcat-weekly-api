@@ -16,7 +16,8 @@ on:
         required: false
         type: string
   schedule:
-    - cron: "37 22 * * *"
+    # 上游 22:37 UTC 生成，通常 20 分钟内完成；延后 53 分钟避开上游失败重试窗口。
+    - cron: "30 23 * * *"
 
 permissions:
   contents: write

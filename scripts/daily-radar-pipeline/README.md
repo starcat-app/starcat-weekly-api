@@ -20,7 +20,7 @@
 
 必须替换上游同名 workflow，不能另留一个仍按 cron 调用 Qwen、创建 Issues 的旧生成流程。保留上游许可证和版权声明，以及原有 CI。
 
-来源模式由仓库变量 `DAILY_RADAR_SOURCE_MODE` 控制，取值只能是 `upstream` 或 `starcat`；缺省为 `upstream`。手动 dispatch 可用 `source_mode` 覆盖仓库变量，便于临时接管或回放。定时触发使用 UTC `37 22 * * *`（上海时间每日 06:37）。触发时间不等于完成时间；仅本地模板包含 cron 不代表远端已经启用，须核对默认分支中的已推送配置。
+来源模式由仓库变量 `DAILY_RADAR_SOURCE_MODE` 控制，取值只能是 `upstream` 或 `starcat`；缺省为 `upstream`。手动 dispatch 可用 `source_mode` 覆盖仓库变量，便于临时接管或回放。定时触发使用 UTC `30 23 * * *`（上海时间每日 07:30），晚于上游 06:37 的生成任务。触发时间不等于完成时间；仅本地模板包含 cron 不代表远端已经启用，须核对默认分支中的已推送配置。
 
 需要的 GitHub Secrets：
 
