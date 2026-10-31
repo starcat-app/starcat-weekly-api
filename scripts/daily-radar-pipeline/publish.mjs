@@ -21,6 +21,7 @@ const SHA = /^[a-f0-9]{40}$/;
 const REPOSITORY = /^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/;
 const MAX_MARKDOWN_BYTES = 1 << 20;
 const MAX_REQUEST_BYTES = 8 << 20;
+const UPSTREAM_REPOSITORY = "duanyytop/agents-radar";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const bytes = (value) => Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value));
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -70,6 +71,13 @@ function reportType(filename) {
   const english = category.endsWith("-en");
   if (english) category = category.slice(0, -3);
   return CATEGORIES.has(category) ? { category, language: english ? "en" : "zh-Hans" } : null;
+}
+
+function commitTimestamp(checkout, commit) {
+  const value = git(checkout, "show", "-s", "--format=%cI", commit).trim();
+  const time = new Date(value);
+  if (!Number.isFinite(time.getTime())) throw new Error("upstream commit timestamp is invalid");
+  return time.toISOString();
 }
 
 function json(text, message) {
@@ -208,6 +216,59 @@ export function loadEdition({ checkout, commit, date, repository }) {
   };
 }
 
+/**
+ * 从上游固定快照读取标准报告。这里刻意不 checkout 上游工作区，也不执行其代码；
+ * 只读取 Git blob，保证后续上游重写历史或删除文件不影响本次来源身份。
+ */
+export function loadUpstreamEdition({ checkout, commit, date }) {
+  validateDate(date);
+  fixedCommit(checkout, commit);
+  const prefix = `digests/${date}/`;
+  const tree = git(checkout, "ls-tree", "-r", "--name-only", commit, "--", prefix)
+    .trim().split("\n").filter(Boolean);
+  const highlightsPath = `${prefix}highlights.json`;
+  let highlights = {};
+  if (tree.includes(highlightsPath)) highlights = json(
+    git(checkout, "show", `${commit}:${highlightsPath}`),
+    "invalid upstream highlights JSON",
+  );
+  const reports = [];
+  const categories = new Map();
+  for (const sourcePath of tree) {
+    const filename = sourcePath.slice(prefix.length);
+    const type = reportType(filename);
+    if (!type || filename.includes("/")) continue;
+    const markdown = git(checkout, "show", `${commit}:${sourcePath}`);
+    const { title, summary } = describeReport(markdown, highlights, type.category, type.language);
+    reports.push({
+      edition_date: date, category: type.category, language: type.language,
+      title, summary, markdown, source_commit: commit, source_path: sourcePath,
+      generated_at: commitTimestamp(checkout, commit),
+      cover: {
+        kind: "category", card_url: null, hero_url: null,
+        fallback: ["ai-trending", "ai-community"].includes(type.category) ? "studio" : "orbit",
+        alt: title,
+      },
+    });
+    const languages = categories.get(type.category) ?? new Set();
+    languages.add(type.language);
+    categories.set(type.category, languages);
+  }
+  // 客户端按 App 语言严格选择中/英文；上游某主题只出现单语言时不能导入，
+  // 否则另一语言用户会看到空目录或被迫回退到错误语言。
+  for (const [category, languages] of categories) {
+    if (languages.has("zh-Hans") !== languages.has("en")) {
+      throw new Error(`upstream category ${category} must provide both zh-Hans and en reports`);
+    }
+  }
+  if (!reports.length) throw new Error("upstream snapshot contains no standard reports for this date");
+  return {
+    repository: UPSTREAM_REPOSITORY, sourceKind: "upstream", commit, date,
+    sequence: null, reports,
+    skipped: tree.filter((file) => file.endsWith(".md") && !reports.some((report) => report.source_path === file)),
+  };
+}
+
 /** 按序列化后的实际 UTF-8 大小切批，JSON 转义开销同样计入服务的 8 MiB 上限。 */
 export function makeBatches(edition, { maxBytes = MAX_REQUEST_BYTES, maxItems = 50 } = {}) {
   if (maxBytes < 1 || maxBytes > MAX_REQUEST_BYTES || maxItems < 1 || maxItems > 50) {
@@ -215,7 +276,7 @@ export function makeBatches(edition, { maxBytes = MAX_REQUEST_BYTES, maxItems = 
   }
   const request = (reports) => {
     const core = {
-      source: "agents-radar", source_kind: "starcat", source_repository: edition.repository,
+      source: "agents-radar", source_kind: edition.sourceKind ?? "starcat", source_repository: edition.repository,
       source_sequence: edition.sequence, reports,
     };
     return { idempotency_key: `daily-${edition.commit}-${hash(JSON.stringify(core))}`, ...core };
@@ -351,7 +412,29 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     sealGeneration(options);
     return;
   }
-  if (!["publish", "status"].includes(command)) throw new Error("expected prepare, seal, status or publish");
+  if (command === "upstream") {
+    if (!Number.isSafeInteger(Number(values.sequence)) || Number(values.sequence) < 1) {
+      throw new Error("upstream source sequence must be a positive safe integer");
+    }
+    const edition = {
+      ...loadUpstreamEdition({ checkout: values.checkout, commit: values.commit, date: values.date }),
+      sequence: Number(values.sequence),
+    };
+    const batches = makeBatches(edition);
+    console.log(`${edition.date}: ${edition.reports.length} reports, ${batches.length} batches, upstream ${edition.commit}`);
+    for (const skipped of edition.skipped) console.log(`skip ${skipped}: non-standard upstream file`);
+    if (!values.apply) {
+      console.log("dry-run complete; no API requests sent");
+      return;
+    }
+    await publishBatches(batches, {
+      baseURL: env.DAILY_RADAR_API_URL || "https://starcat-api.fly.dev",
+      token: env.DAILY_RADAR_ADMIN_API_KEY,
+    });
+    console.log("all upstream reports published");
+    return;
+  }
+  if (!["publish", "status"].includes(command)) throw new Error("expected prepare, seal, status, upstream or publish");
   const edition = loadEdition(options);
   if (command === "status") {
     console.log(`ready=${edition !== null}`);

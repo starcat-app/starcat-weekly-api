@@ -106,7 +106,8 @@ func TestPublicationPaginationCacheAndWeeklyIsolation(t *testing.T) {
 	if err != nil || total != 0 {
 		t.Fatalf("daily import leaked into Weekly: total=%d err=%v", total, err)
 	}
-	r := get(t, m, "/api/v1/daily-radar/reports?language=zh-Hans&limit=1", "")
+	// 默认不回退语言；这里显式测试旧客户端仍可通过 fallback=true 获取另一语言。
+	r := get(t, m, "/api/v1/daily-radar/reports?language=zh-Hans&fallback=true&limit=1", "")
 	if r.Code != 200 {
 		t.Fatal(r.Body.String())
 	}
@@ -115,10 +116,10 @@ func TestPublicationPaginationCacheAndWeeklyIsolation(t *testing.T) {
 		t.Fatalf("%+v", list)
 	}
 	etag := r.Header().Get("ETag")
-	if get(t, m, "/api/v1/daily-radar/reports?language=zh-Hans&limit=1", etag).Code != 304 {
+	if get(t, m, "/api/v1/daily-radar/reports?language=zh-Hans&fallback=true&limit=1", etag).Code != 304 {
 		t.Fatal("missing conditional response")
 	}
-	nextPath := "/api/v1/daily-radar/reports?language=zh-Hans&limit=1&cursor=" + *list.NextCursor
+	nextPath := "/api/v1/daily-radar/reports?language=zh-Hans&fallback=true&limit=1&cursor=" + *list.NextCursor
 	next := data[radar.ListResponse](t, get(t, m, nextPath, ""))
 	if len(next.Items) != 1 || next.FeaturedID != nil || next.Items[0].EditionDate != "2026-10-27" {
 		t.Fatalf("%+v", next)

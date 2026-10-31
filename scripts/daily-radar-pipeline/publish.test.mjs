@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  describeReport, loadEdition, makeBatches, prepareGeneration, publishBatches,
+  describeReport, loadEdition, loadUpstreamEdition, makeBatches, prepareGeneration, publishBatches,
   requestJSON, sealGeneration, shanghaiDate,
 } from "./publish.mjs";
 
@@ -111,6 +111,31 @@ test("无 highlights 使用与 Go 导入器一致的首段摘要", () => {
   const result = describeReport(markdown, {}, "ai-cli", "zh-Hans");
   assert.equal(result.title, "AI CLI 日报");
   assert.equal(result.summary, "这是实际生成的日报正文，包含真实的项目链接。");
+});
+
+test("上游固定快照只读取标准报告，且同主题必须中英文成对", (t) => {
+  const f = fixture(t);
+  f.write(`digests/${date}/ai-cli.md`, markdown);
+  f.write(`digests/${date}/ai-cli-en.md`, "# AI CLI Digest\n\nA real upstream report with more than fifteen characters.\n");
+  f.write(`digests/${date}/index.md`, "# Upstream index\n\nNot a standard report.");
+  const commit = f.commit();
+  const edition = loadUpstreamEdition({ checkout: f.checkout, commit, date });
+  assert.equal(edition.sourceKind, "upstream");
+  assert.equal(edition.repository, "duanyytop/agents-radar");
+  assert.equal(edition.commit, commit);
+  assert.equal(edition.reports.length, 2);
+  assert.ok(edition.reports.every((report) => report.source_commit === commit));
+  assert.deepEqual(edition.skipped, [`digests/${date}/index.md`]);
+  const batches = makeBatches(edition);
+  assert.equal(batches[0].source_kind, "upstream");
+  assert.equal(batches[0].source_repository, "duanyytop/agents-radar");
+
+  f.write(`digests/${date}/ai-hn.md`, "# Only Chinese\n\nA single-language category cannot be published.");
+  const broken = f.commit();
+  assert.throws(
+    () => loadUpstreamEdition({ checkout: f.checkout, commit: broken, date }),
+    /ai-hn must provide both/,
+  );
 });
 
 test("分批按 JSON 字节数与 50 项双重约束，重试保持幂等键", (t) => {

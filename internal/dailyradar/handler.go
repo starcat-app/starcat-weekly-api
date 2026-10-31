@@ -70,8 +70,10 @@ type CatalogResponse struct {
 }
 
 func parseQuery(values url.Values) (query, error) {
+	// 客户端语言策略是“中文取 zh-Hans，其它语言取 en”；默认禁止 fallback，
+	// 避任一语言缺口被悄悄展示成另一种语言。
 	q := query{Category: values.Get("category"), Period: values.Get("period"), Language: values.Get("language"),
-		Fallback: true, From: values.Get("date_from"), To: values.Get("date_to"), Month: values.Get("month"), Limit: 20}
+		Fallback: false, From: values.Get("date_from"), To: values.Get("date_to"), Month: values.Get("month"), Limit: 20}
 	if q.Period == "" {
 		q.Period = "daily"
 	}

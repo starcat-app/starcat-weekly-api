@@ -25,4 +25,9 @@ go run ./cmd/daily-radar-import -checkout /path/to/agents-radar -commit FIXED_SH
 
 CLI 用 `git rev-parse` 固定 commit，`git ls-tree` 与 `git show` 读取对象。历史 `generated_at` 取该文件在固定 ref 历史中的最后提交时间，是来源时间的可追溯近似值，不表示已获知精确 AI 生成完成时间；业务日期始终来自目录。标准类型导入，早期 OpenClaw 在同语言无 ai-agents 聚合稿时映射，其他未知 / 子报告记录跳过原因；不以 manifest 数量冒充全历史覆盖。每批最多50份，同时按序列化大小保持请求小于8MiB；同快照、来源、序列及分片产生稳定幂等键。提交超时后可重跑；输出 202 批次 ID，用管理查询观察后续结果。`source_sequence` 必须由生产流水线单调推进，重跑相同内容保持不变；不能把 Git SHA 字符串排序当成版本序列。
 
-日常自生成任务以 `source_kind=starcat`、允许的 `source_repository`、明确序列提交同一管理接口。在线请求不运行模型或图像生成。此实现不自动启用生产生成、历史导入、CDN 或定时发布。
+日常发布支持两条互斥来源路径，最终都提交同一管理接口：
+
+- `upstream`：CI 固定读取 `duanyytop/agents-radar` 的目标日期 Markdown，不执行上游代码；同主题必须中英文成对，`source_sequence` 使用上游 commit 的 Unix 秒。
+- `starcat`：受控 fork 调用 DeepSeek 生成，带 `.starcat-generation.json` 来源记录与独立序列，仅作为接管路径。
+
+上游删除文件、删除仓库或重写历史只影响后续同步，不会删除已入库的不可变修订。服务端展示优先级仍为 `starcat > upstream`，表示“接管”而非最后写入优先。在线请求不运行模型或图像生成。

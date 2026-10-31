@@ -4,6 +4,17 @@ name: Starcat Daily Radar
 
 on:
   workflow_dispatch:
+    inputs:
+      source_mode:
+        description: "upstream reads the published upstream snapshot; starcat generates locally"
+        required: false
+        default: "upstream"
+        type: choice
+        options: ["upstream", "starcat"]
+      edition_date:
+        description: "Optional Shanghai date for retrying a committed edition"
+        required: false
+        type: string
   schedule:
     - cron: "37 22 * * *"
 
@@ -15,7 +26,75 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  route-source:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.route.outputs.mode }}
+      date: ${{ steps.route.outputs.date }}
+    steps:
+      - name: Route source mode
+        id: route
+        env:
+          DISPATCH_MODE: ${{ inputs.source_mode }}
+          REPOSITORY_MODE: ${{ vars.DAILY_RADAR_SOURCE_MODE || 'upstream' }}
+        run: |
+          MODE="${DISPATCH_MODE:-$REPOSITORY_MODE}"
+          case "$MODE" in
+            upstream|starcat) ;;
+            *) echo "Invalid DAILY_RADAR_SOURCE_MODE: $MODE" >&2; exit 1 ;;
+          esac
+          DATE="${{ inputs.edition_date }}"
+          if [ -z "$DATE" ]; then DATE=$(TZ=Asia/Shanghai date +%Y-%m-%d); fi
+          printf 'mode=%s\ndate=%s\n' "$MODE" "$DATE" >> "$GITHUB_OUTPUT"
+
+  upstream-sync:
+    needs: route-source
+    if: needs.route-source.outputs.mode == 'upstream'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    concurrency:
+      group: starcat-daily-radar-upstream
+      cancel-in-progress: false
+    steps:
+      - name: Checkout controlled publishing adapter
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - name: Fetch upstream snapshot
+        run: |
+          git remote add upstream https://github.com/duanyytop/agents-radar.git
+          git fetch --no-tags --depth=1 upstream master
+          printf 'UPSTREAM_COMMIT=%s\n' "$(git rev-parse FETCH_HEAD)" >> "$GITHUB_ENV"
+      - name: Validate upstream publication
+        env:
+          DAILY_RADAR_ADMIN_API_KEY: ${{ secrets.DAILY_RADAR_ADMIN_API_KEY }}
+          DAILY_RADAR_API_URL: ${{ vars.DAILY_RADAR_API_URL || 'https://starcat-api.fly.dev' }}
+        run: |
+          for name in DAILY_RADAR_ADMIN_API_KEY DAILY_RADAR_API_URL; do
+            if [ -z "${!name}" ]; then echo "$name is required" >&2; exit 1; fi
+          done
+          node --check scripts/starcat/publish.mjs
+          node --test scripts/starcat/publish.test.mjs
+          node scripts/starcat/publish.mjs upstream \
+            --commit "$UPSTREAM_COMMIT" \
+            --date "${{ needs.route-source.outputs.date }}"
+      - name: Publish upstream snapshot
+        env:
+          DAILY_RADAR_ADMIN_API_KEY: ${{ secrets.DAILY_RADAR_ADMIN_API_KEY }}
+          DAILY_RADAR_API_URL: ${{ vars.DAILY_RADAR_API_URL || 'https://starcat-api.fly.dev' }}
+        run: |
+          # Commit 秒级 Unix 时间保持单调递增；幂等键仍由完整报告内容派生。
+          SEQUENCE=$(git show -s --format=%ct "$UPSTREAM_COMMIT")
+          node scripts/starcat/publish.mjs upstream \
+            --commit "$UPSTREAM_COMMIT" \
+            --date "${{ needs.route-source.outputs.date }}" \
+            --sequence "$SEQUENCE" \
+            --apply
+
   generate-and-publish:
+    needs: route-source
+    if: needs.route-source.outputs.mode == 'starcat'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     # 只运行受控 fork 的默认分支，避免从其他分支发布不同的生成逻辑。
@@ -57,7 +136,7 @@ jobs:
       - name: Determine today's generation state
         id: edition
         run: |
-          DATE=$(TZ=Asia/Shanghai date +%Y-%m-%d)
+          DATE="${{ needs.route-source.outputs.date }}"
           COMMIT=$(git rev-parse HEAD)
           printf 'date=%s\n' "$DATE" >> "$GITHUB_OUTPUT"
           node scripts/starcat/publish.mjs status --commit "$COMMIT" --date "$DATE" >> "$GITHUB_OUTPUT"
