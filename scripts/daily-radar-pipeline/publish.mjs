@@ -413,12 +413,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return;
   }
   if (command === "upstream") {
-    if (!Number.isSafeInteger(Number(values.sequence)) || Number(values.sequence) < 1) {
-      throw new Error("upstream source sequence must be a positive safe integer");
+    const sequence = /^\d+$/.test(values.sequence ?? "") ? Number(values.sequence) : null;
+    if (values.apply && (!Number.isSafeInteger(sequence) || sequence < 1)) {
+      throw new Error("upstream source sequence must be a positive safe integer when applying");
     }
     const edition = {
       ...loadUpstreamEdition({ checkout: values.checkout, commit: values.commit, date: values.date }),
-      sequence: Number(values.sequence),
+      sequence,
     };
     const batches = makeBatches(edition);
     console.log(`${edition.date}: ${edition.reports.length} reports, ${batches.length} batches, upstream ${edition.commit}`);

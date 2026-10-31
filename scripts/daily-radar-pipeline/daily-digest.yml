@@ -94,11 +94,10 @@ jobs:
 
   generate-and-publish:
     needs: route-source
-    if: needs.route-source.outputs.mode == 'starcat'
+    # 只运行受控 fork 的默认分支，避免从其他分支发布不同的生成逻辑。
+    if: needs.route-source.outputs.mode == 'starcat' && github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    # 只运行受控 fork 的默认分支，避免从其他分支发布不同的生成逻辑。
-    if: github.ref_name == github.event.repository.default_branch
     steps:
       - name: Checkout controlled source
         uses: actions/checkout@v4

@@ -138,6 +138,20 @@ test("上游固定快照只读取标准报告，且同主题必须中英文成�
   );
 });
 
+test("上游 dry-run 不需要序列，apply 才强制使用上游提交秒", (t) => {
+  const f = fixture(t);
+  f.write(`digests/${date}/ai-cli.md`, markdown);
+  f.write(`digests/${date}/ai-cli-en.md`, "# AI CLI Digest\n\nA real upstream report with more than fifteen characters.\n");
+  const commit = f.commit();
+  const edition = loadUpstreamEdition({ checkout: f.checkout, commit, date });
+  assert.equal(edition.sequence, null);
+  const batches = makeBatches(edition);
+  assert.equal(batches[0].source_sequence, null);
+  const seconds = Number(execFileSync("git", ["-C", f.checkout, "show", "-s", "--format=%ct", commit]).toString().trim());
+  const applied = makeBatches({ ...edition, sequence: seconds });
+  assert.equal(applied[0].source_sequence, seconds);
+});
+
 test("分批按 JSON 字节数与 50 项双重约束，重试保持幂等键", (t) => {
   const f = generated(t);
   const edition = loadEdition(f.options);
