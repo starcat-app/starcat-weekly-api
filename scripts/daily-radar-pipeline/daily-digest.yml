@@ -1,0 +1,207 @@
+# 安装为受控 fork 的 .github/workflows/daily-digest.yml，替换上游同名流程。
+# 首轮端到端验收后启用每日调度；上海业务日期用于生成身份，实际完成时间可能延后。
+name: Starcat Daily Radar
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_mode:
+        description: "upstream reads the published upstream snapshot; starcat generates locally"
+        required: false
+        default: "upstream"
+        type: choice
+        options: ["upstream", "starcat"]
+      edition_date:
+        description: "Optional Shanghai date for retrying a committed edition"
+        required: false
+        type: string
+  schedule:
+    # 上游 22:37 UTC 生成，通常 20 分钟内完成；延后 53 分钟避开上游失败重试窗口。
+    - cron: "30 23 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: starcat-daily-radar
+  cancel-in-progress: false
+
+jobs:
+  route-source:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.route.outputs.mode }}
+      date: ${{ steps.route.outputs.date }}
+    steps:
+      - name: Route source mode
+        id: route
+        env:
+          DISPATCH_MODE: ${{ inputs.source_mode }}
+          REPOSITORY_MODE: ${{ vars.DAILY_RADAR_SOURCE_MODE || 'upstream' }}
+        run: |
+          MODE="${DISPATCH_MODE:-$REPOSITORY_MODE}"
+          case "$MODE" in
+            upstream|starcat) ;;
+            *) echo "Invalid DAILY_RADAR_SOURCE_MODE: $MODE" >&2; exit 1 ;;
+          esac
+          DATE="${{ inputs.edition_date }}"
+          if [ -z "$DATE" ]; then DATE=$(TZ=Asia/Shanghai date +%Y-%m-%d); fi
+          printf 'mode=%s\ndate=%s\n' "$MODE" "$DATE" >> "$GITHUB_OUTPUT"
+
+  upstream-sync:
+    needs: route-source
+    if: needs.route-source.outputs.mode == 'upstream'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    concurrency:
+      group: starcat-daily-radar-upstream
+      cancel-in-progress: false
+    steps:
+      - name: Checkout controlled publishing adapter
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - name: Fetch upstream snapshot
+        run: |
+          git remote add upstream https://github.com/duanyytop/agents-radar.git
+          git fetch --no-tags --depth=1 upstream master
+          printf 'UPSTREAM_COMMIT=%s\n' "$(git rev-parse FETCH_HEAD)" >> "$GITHUB_ENV"
+      - name: Validate upstream publication
+        env:
+          DAILY_RADAR_ADMIN_API_KEY: ${{ secrets.DAILY_RADAR_ADMIN_API_KEY }}
+          DAILY_RADAR_API_URL: ${{ vars.DAILY_RADAR_API_URL || 'https://starcat-api.fly.dev' }}
+        run: |
+          for name in DAILY_RADAR_ADMIN_API_KEY DAILY_RADAR_API_URL; do
+            if [ -z "${!name}" ]; then echo "$name is required" >&2; exit 1; fi
+          done
+          node --check scripts/starcat/publish.mjs
+          node --test scripts/starcat/publish.test.mjs
+          node scripts/starcat/publish.mjs upstream \
+            --commit "$UPSTREAM_COMMIT" \
+            --date "${{ needs.route-source.outputs.date }}"
+      - name: Publish upstream snapshot
+        env:
+          DAILY_RADAR_ADMIN_API_KEY: ${{ secrets.DAILY_RADAR_ADMIN_API_KEY }}
+          DAILY_RADAR_API_URL: ${{ vars.DAILY_RADAR_API_URL || 'https://starcat-api.fly.dev' }}
+        run: |
+          # Commit 秒级 Unix 时间保持单调递增；幂等键仍由完整报告内容派生。
+          SEQUENCE=$(git show -s --format=%ct "$UPSTREAM_COMMIT")
+          node scripts/starcat/publish.mjs upstream \
+            --commit "$UPSTREAM_COMMIT" \
+            --date "${{ needs.route-source.outputs.date }}" \
+            --sequence "$SEQUENCE" \
+            --apply
+
+  generate-and-publish:
+    needs: route-source
+    # 只运行受控 fork 的默认分支，避免从其他分支发布不同的生成逻辑。
+    if: needs.route-source.outputs.mode == 'starcat' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout controlled source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Validate publishing configuration
+        env:
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+          GLM_BASE_URL: ${{ vars.GLM_BASE_URL || 'https://new-api.m349.net/v1' }}
+          GLM_MODEL: ${{ vars.GLM_MODEL || 'glm-5.3' }}
+          DAILY_RADAR_ADMIN_API_KEY: ${{ secrets.DAILY_RADAR_ADMIN_API_KEY }}
+          DAILY_RADAR_API_URL: ${{ vars.DAILY_RADAR_API_URL || 'https://starcat-api.fly.dev' }}
+        run: |
+          node --input-type=module <<'NODE'
+          for (const name of ["GLM_API_KEY", "GLM_BASE_URL", "GLM_MODEL", "DAILY_RADAR_ADMIN_API_KEY", "DAILY_RADAR_API_URL"]) {
+            if (!process.env[name]) throw new Error(`${name} is required`);
+          }
+          const glm = new URL(process.env.GLM_BASE_URL);
+          if (glm.protocol !== "https:" || glm.username || glm.password || glm.search || glm.hash || glm.pathname !== "/v1") {
+            throw new Error("GLM_BASE_URL must be an HTTPS /v1 OpenAI-compatible endpoint");
+          }
+          const url = new URL(process.env.DAILY_RADAR_API_URL);
+          if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+            throw new Error("DAILY_RADAR_API_URL must be an HTTPS origin");
+          }
+          NODE
+
+      - name: Determine today's generation state
+        id: edition
+        run: |
+          DATE="${{ needs.route-source.outputs.date }}"
+          COMMIT=$(git rev-parse HEAD)
+          printf 'date=%s\n' "$DATE" >> "$GITHUB_OUTPUT"
+          node scripts/starcat/publish.mjs status --commit "$COMMIT" --date "$DATE" >> "$GITHUB_OUTPUT"
+
+      - name: Verify publication adapter
+        run: node --test scripts/starcat/publish.test.mjs
+
+      - name: Install generator dependencies
+        if: steps.edition.outputs.ready != 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare current-day generation
+        if: steps.edition.outputs.ready != 'true'
+        env:
+          EDITION_DATE: ${{ steps.edition.outputs.date }}
+        run: |
+          SEQUENCE=$((GITHUB_RUN_NUMBER * 1000 + GITHUB_RUN_ATTEMPT))
+          node scripts/starcat/publish.mjs prepare --date "$EDITION_DATE" --sequence "$SEQUENCE"
+
+      - name: Generate reports using GLM
+        if: steps.edition.outputs.ready != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LLM_PROVIDER: openai
+          OPENAI_API_KEY: ${{ secrets.GLM_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.GLM_BASE_URL || 'https://new-api.m349.net/v1' }}
+          OPENAI_MODEL: ${{ vars.GLM_MODEL || 'glm-5.3' }}
+          PRODUCTHUNT_TOKEN: ${{ secrets.PRODUCTHUNT_TOKEN }}
+          # 仅写日报文件，不创建 Issues，也不触发上游通知。
+          DIGEST_REPO: ""
+        run: pnpm start
+
+      - name: Seal successful generation and update indexes
+        if: steps.edition.outputs.ready != 'true'
+        env:
+          EDITION_DATE: ${{ steps.edition.outputs.date }}
+        run: |
+          node scripts/starcat/publish.mjs seal --date "$EDITION_DATE"
+          pnpm manifest
+
+      - name: Commit and push generated files before publication
+        if: steps.edition.outputs.ready != 'true'
+        env:
+          EDITION_DATE: ${{ steps.edition.outputs.date }}
+          TARGET_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "digests/$EDITION_DATE" digests/web-state.json manifest.json feed.xml
+          git diff --cached --quiet && { echo "Generation produced no committed changes"; exit 1; }
+          git commit -m "digest: ${EDITION_DATE} Starcat daily radar"
+          git pull --rebase origin "$TARGET_BRANCH"
+          git push origin "HEAD:$TARGET_BRANCH"
+
+      - name: Publish committed reports and wait for completion
+        env:
+          EDITION_DATE: ${{ steps.edition.outputs.date }}
+          DAILY_RADAR_API_URL: ${{ vars.DAILY_RADAR_API_URL || 'https://starcat-api.fly.dev' }}
+          DAILY_RADAR_ADMIN_API_KEY: ${{ secrets.DAILY_RADAR_ADMIN_API_KEY }}
+        run: |
+          COMMIT=$(git rev-parse HEAD)
+          node scripts/starcat/publish.mjs publish --date "$EDITION_DATE" --commit "$COMMIT" --apply

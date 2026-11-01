@@ -31,6 +31,7 @@ func (s *SQLiteStore) runMigrations() error {
 	migrations := []schemaMigration{
 		{version: 1, name: "weekly multi-source foundation", apply: migrateMultiSourceFoundation},
 		{version: 2, name: "weekly issue content hash", apply: migrateWeeklyIssueContentHash},
+		{version: 3, name: "daily radar immutable publication", apply: migrateDailyRadar},
 	}
 	for _, migration := range migrations {
 		var applied int

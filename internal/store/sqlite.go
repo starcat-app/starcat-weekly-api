@@ -7,16 +7,21 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 
+	"github.com/starcat-app/starcat-weekly-api/internal/dailyradar"
 	"github.com/starcat-app/starcat-weekly-api/internal/model"
 	"github.com/starcat-app/starcat-weekly-api/internal/source"
 )
 
 type SQLiteStore struct {
 	db *sql.DB
+	// 日报目录与周刊 bulk 分离；按发布版本缓存摘要，绝不缓存完整正文集合。
+	radarMu       sync.Mutex
+	radarSnapshot *dailyradar.Snapshot
 }
 
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
