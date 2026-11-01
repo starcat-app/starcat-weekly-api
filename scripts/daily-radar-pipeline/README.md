@@ -3,11 +3,11 @@
 本目录是安装到受控 `starcat-app/agents-radar` fork 的发布适配器，不是 Weekly 服务部署入口。流水线有两条互斥来源路径：
 
 - **`upstream`（默认）**：读取 `duanyytop/agents-radar` 固定 Git commit 中已经生成好的中英文 Markdown，不运行上游代码、不调用模型，只通过现有日报管理 API 入库。
-- **`starcat`（接管）**：保留现有 DeepSeek 自生成路径。仅在上游失败、结构或语言质量不满足 Starcat 需求、或产品需要接管内容时手动/策略切换。
+- **`starcat`（接管）**：保留 GLM 自生成备用路径。仅在上游失败、结构或语言质量不满足 Starcat 需求、或产品需要接管内容时手动/策略切换。
 
 两条路径最终都发送到同一个 `/internal/daily-radar/imports` 管理 API，继续复用持久队列、幂等批次、GitHub 项目核验、不可变修订和目录缓存；不因为是上游还是自生成而另建发布通道。
 
-实现核对基线为上游 `1682c89c9a9c726fcc1139659c52a12872c9baf4`。使用 Node 22、pnpm 9.15.9、上游内置 DeepSeek provider，工作流固定 `DEEPSEEK_MODEL=deepseek-flash`。保留上游 `assertLlmHealthy`，生成失败会阻断提交和发布；`DIGEST_REPO` 留空，不创建 GitHub Issues，不运行上游通知步骤。
+实现核对基线为上游 `1682c89c9a9c726fcc1139659c52a12872c9baf4`。使用 Node 22、pnpm 9.15.9、上游内置 OpenAI-compatible provider 调用 GLM；默认 endpoint 为 `https://new-api.m349.net/v1`，默认模型为 `glm-5.3`。保留上游 `assertLlmHealthy`，生成失败会阻断提交和发布；`DIGEST_REPO` 留空，不创建 GitHub Issues，不运行上游通知步骤。
 
 ## 安装位置
 
@@ -24,9 +24,11 @@
 
 需要的 GitHub Secrets：
 
-- `DEEPSEEK_API_KEY`：Starcat 运营侧的模型凭据。
+- `GLM_API_KEY`：Starcat 运营侧的 GLM 中转站凭据。
 - `DAILY_RADAR_ADMIN_API_KEY`：生产 Weekly 独立管理凭据，不能用公开读取 Key。
 - `PRODUCTHUNT_TOKEN`：可选；该来源是否有内容由上游生成器处理。
+
+可选仓库变量 `GLM_BASE_URL` 必须是 HTTPS 且路径为 `/v1` 的 OpenAI-compatible endpoint，默认 `https://new-api.m349.net/v1`；`GLM_MODEL` 默认 `glm-5.3`。模型凭据只注入 Actions 环境，不写入命令参数、JSON 产物或日志。
 
 `GITHUB_TOKEN` 由 GitHub Actions 自动提供，仅授予 `contents: write`。可选仓库变量 `DAILY_RADAR_API_URL` 默认为 `https://starcat-api.fly.dev`，只能是 HTTPS origin。服务端需允许来源仓库 `starcat-app/agents-radar`：聚合配置 `WEEKLY_DAILY_RADAR_SOURCE_REPOSITORIES`，独立服务对应 `DAILY_RADAR_SOURCE_REPOSITORIES`。凭据不得写入命令参数、JSON 产物或日志。
 

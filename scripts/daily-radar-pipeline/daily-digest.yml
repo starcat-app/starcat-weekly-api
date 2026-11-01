@@ -119,13 +119,19 @@ jobs:
 
       - name: Validate publishing configuration
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+          GLM_BASE_URL: ${{ vars.GLM_BASE_URL || 'https://new-api.m349.net/v1' }}
+          GLM_MODEL: ${{ vars.GLM_MODEL || 'glm-5.3' }}
           DAILY_RADAR_ADMIN_API_KEY: ${{ secrets.DAILY_RADAR_ADMIN_API_KEY }}
           DAILY_RADAR_API_URL: ${{ vars.DAILY_RADAR_API_URL || 'https://starcat-api.fly.dev' }}
         run: |
           node --input-type=module <<'NODE'
-          for (const name of ["DEEPSEEK_API_KEY", "DAILY_RADAR_ADMIN_API_KEY", "DAILY_RADAR_API_URL"]) {
+          for (const name of ["GLM_API_KEY", "GLM_BASE_URL", "GLM_MODEL", "DAILY_RADAR_ADMIN_API_KEY", "DAILY_RADAR_API_URL"]) {
             if (!process.env[name]) throw new Error(`${name} is required`);
+          }
+          const glm = new URL(process.env.GLM_BASE_URL);
+          if (glm.protocol !== "https:" || glm.username || glm.password || glm.search || glm.hash || glm.pathname !== "/v1") {
+            throw new Error("GLM_BASE_URL must be an HTTPS /v1 OpenAI-compatible endpoint");
           }
           const url = new URL(process.env.DAILY_RADAR_API_URL);
           if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
@@ -156,13 +162,14 @@ jobs:
           SEQUENCE=$((GITHUB_RUN_NUMBER * 1000 + GITHUB_RUN_ATTEMPT))
           node scripts/starcat/publish.mjs prepare --date "$EDITION_DATE" --sequence "$SEQUENCE"
 
-      - name: Generate reports using DeepSeek
+      - name: Generate reports using GLM
         if: steps.edition.outputs.ready != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LLM_PROVIDER: deepseek
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_MODEL: deepseek-flash
+          LLM_PROVIDER: openai
+          OPENAI_API_KEY: ${{ secrets.GLM_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.GLM_BASE_URL || 'https://new-api.m349.net/v1' }}
+          OPENAI_MODEL: ${{ vars.GLM_MODEL || 'glm-5.3' }}
           PRODUCTHUNT_TOKEN: ${{ secrets.PRODUCTHUNT_TOKEN }}
           # 仅写日报文件，不创建 Issues，也不触发上游通知。
           DIGEST_REPO: ""

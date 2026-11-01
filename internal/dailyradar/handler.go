@@ -63,10 +63,31 @@ type DatesResponse struct {
 	LatestAvailableDate *string     `json:"latest_available_date"`
 }
 type CatalogResponse struct {
-	CatalogRevision     string     `json:"catalog_revision"`
-	Categories          []Category `json:"categories"`
-	AvailableLanguages  []string   `json:"available_languages"`
-	LatestAvailableDate *string    `json:"latest_available_date"`
+	CatalogRevision     string         `json:"catalog_revision"`
+	Categories          []Category     `json:"categories"`
+	AvailableLanguages  []string       `json:"available_languages"`
+	LatestAvailableDate *string        `json:"latest_available_date"`
+	CategoryCounts      map[string]int `json:"category_counts"`
+	TotalCount          int            `json:"total_count"`
+}
+
+// countByLanguage 统计各分类在请求语言下的报告数，供侧边栏计数徽标使用。
+// 语义与 selectItems 的 fallback=false 一致：同一报告多语言变体按 ID 去重，
+// 任一变体命中请求语言即计入；不按 period 过滤，父级总数需覆盖全部期次
+// （周报 / 月报分类的报告天然属于自身 period，不会重复计数）。
+func countByLanguage(items []Summary, language string) (map[string]int, int) {
+	counts := make(map[string]int)
+	total := 0
+	seen := make(map[string]bool)
+	for _, item := range items {
+		if item.ContentLanguage != language || seen[item.ID] {
+			continue
+		}
+		seen[item.ID] = true
+		counts[item.Category]++
+		total++
+	}
+	return counts, total
 }
 
 func parseQuery(values url.Values) (query, error) {
@@ -192,7 +213,12 @@ func (h *Handler) Catalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := selectItems(s, q)
-	out := CatalogResponse{CatalogRevision: s.Revision, Categories: append([]Category{}, Categories...), AvailableLanguages: []string{}}
+	out := CatalogResponse{CatalogRevision: s.Revision, Categories: append([]Category{}, Categories...), AvailableLanguages: []string{}, CategoryCounts: map[string]int{}}
+	counts, total := countByLanguage(s.Items, q.Language)
+	for id, count := range counts {
+		out.CategoryCounts[id] = count
+	}
+	out.TotalCount = total
 	languages := make(map[string]bool)
 	for _, item := range s.Items {
 		languages[item.ContentLanguage] = true

@@ -132,6 +132,16 @@ func TestPublicationPaginationCacheAndWeeklyIsolation(t *testing.T) {
 	if len(dates.Dates) != 1 || dates.Dates[0].Count != 1 {
 		t.Fatalf("%+v", dates)
 	}
+	// 侧边栏计数徽标：语言去重后按分类统计；strict 语言下 zh 只见双语那份，
+	// en 见两份（10-28 与 10-27），父级总数覆盖全部期次。
+	catalog := data[radar.CatalogResponse](t, get(t, m, "/api/v1/daily-radar/catalog?language=zh-Hans&fallback=false", ""))
+	if catalog.CategoryCounts["ai-cli"] != 1 || catalog.TotalCount != 1 {
+		t.Fatalf("%+v", catalog)
+	}
+	enCatalog := data[radar.CatalogResponse](t, get(t, m, "/api/v1/daily-radar/catalog?language=en&fallback=false", ""))
+	if enCatalog.CategoryCounts["ai-cli"] != 2 || enCatalog.TotalCount != 2 {
+		t.Fatalf("%+v", enCatalog)
+	}
 	enqueue(t, s, w, 2, "upstream", candidate("2026-10-29", "ai-cli", "en"))
 	if r := get(t, m, nextPath, etag); r.Code != 409 || !strings.Contains(r.Body.String(), "CATALOG_CHANGED") {
 		t.Fatal("stale cursor accepted", r.Body.String())
