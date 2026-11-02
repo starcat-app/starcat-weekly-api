@@ -60,7 +60,7 @@ body:
       description: 运行环境
       placeholder: |
         - OS: macOS 15.5
-        - Go 版本: 1.25
+        - Go 版本: 1.26.10
         - 部署方式: 本地
     validations:
       required: false

@@ -285,7 +285,7 @@ GET /healthz
 
 ## 技术栈
 
-- **Go 1.23** — `net/http` 标准库
+- **Go 1.26.10** — `net/http` 标准库
 - **goldmark** — Markdown AST 解析
 - **modernc.org/sqlite** — 纯 Go SQLite（无 CGO，可交叉编译进 Docker scratch）
 - **robfig/cron/v3** — 定时同步

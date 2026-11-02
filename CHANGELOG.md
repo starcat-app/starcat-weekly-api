@@ -22,6 +22,9 @@
 
 ## [Unreleased]
 
+### Security
+- 将 Go 工具链、CI 和 Docker 构建统一至 1.26.10，并在 CI 中加入固定版本的 govulncheck 检查。
+
 ### Fixed
 - 聚合 Wiki 通知：Wiki notifier 请求固定携带 `X-SC-Svc: wiki`，避免 loopback 请求被聚合网关拒绝分流
 

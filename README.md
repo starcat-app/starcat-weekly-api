@@ -304,7 +304,7 @@ Metrics exclude credentials, queries, bodies, client addresses, and real path pa
 
 ## Technology Stack
 
-- **Go 1.23** — `net/http` standard library
+- **Go 1.26.10** — `net/http` standard library
 - **goldmark** — Markdown AST parsing
 - **modernc.org/sqlite** — Pure Go SQLite with no CGO, suitable for cross-compilation into a Docker scratch image
 - **robfig/cron/v3** — Scheduled synchronization

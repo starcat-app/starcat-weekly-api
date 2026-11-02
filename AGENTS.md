@@ -9,7 +9,7 @@ Starcat Weekly 后端：聚合阮一峰周刊（ruanyf/weekly）、zread、Show 
 
 ## 技术栈
 
-- Go 1.25.0 · `net/http`（纯标准库 HTTP）
+- Go 1.26.10 · `net/http`（纯标准库 HTTP）
 - `github.com/yuin/goldmark`（Markdown AST 解析）
 - `modernc.org/sqlite`（纯 Go，无 CGO）
 - `github.com/robfig/cron/v3`（定时同步）
