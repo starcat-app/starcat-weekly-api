@@ -26,6 +26,9 @@ const hash = (value) => createHash("sha256").update(value).digest("hex");
 const bytes = (value) => Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value));
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 
+/** 仅缺稿或语言未配齐属于可补拉状态；Git、正文和 API 错误仍必须失败。 */
+class UpstreamNotReadyError extends Error {}
+
 /** 上海业务日期与上游生成器保持一致，不依赖 runner 的 UTC 默认时区。 */
 export function shanghaiDate(now = new Date()) {
   return new Intl.DateTimeFormat("en-CA", {
@@ -258,10 +261,10 @@ export function loadUpstreamEdition({ checkout, commit, date }) {
   // 否则另一语言用户会看到空目录或被迫回退到错误语言。
   for (const [category, languages] of categories) {
     if (languages.has("zh-Hans") !== languages.has("en")) {
-      throw new Error(`upstream category ${category} must provide both zh-Hans and en reports`);
+      throw new UpstreamNotReadyError(`upstream category ${category} must provide both zh-Hans and en reports`);
     }
   }
-  if (!reports.length) throw new Error("upstream snapshot contains no standard reports for this date");
+  if (!reports.length) throw new UpstreamNotReadyError("upstream snapshot contains no standard reports for this date");
   return {
     repository: UPSTREAM_REPOSITORY, sourceKind: "upstream", commit, date,
     sequence: null, reports,
@@ -391,7 +394,7 @@ export async function publishBatches(batches, {
   return outcomes;
 }
 
-/** CLI 默认仅验证固定提交并盘点；只有 publish --apply 才会调用管理 API。 */
+/** CLI 默认仅验证固定提交并盘点；只有 publish/upstream --apply 才会调用管理 API。 */
 export async function main(argv = process.argv.slice(2), env = process.env) {
   const { values, positionals } = parseArgs({
     args: argv, allowPositionals: true,
@@ -410,6 +413,19 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
   if (command === "seal") {
     sealGeneration(options);
+    return;
+  }
+  if (command === "upstream-status") {
+    try {
+      // 与实际发布走同一验证路径，只有可恢复的缺稿状态能输出 ready=false。
+      makeBatches(loadUpstreamEdition(options));
+    } catch (error) {
+      if (!(error instanceof UpstreamNotReadyError)) throw error;
+      console.log("ready=false");
+      console.log(`reason=${error.message}`);
+      return;
+    }
+    console.log("ready=true");
     return;
   }
   if (command === "upstream") {
@@ -435,7 +451,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     console.log("all upstream reports published");
     return;
   }
-  if (!["publish", "status"].includes(command)) throw new Error("expected prepare, seal, status, upstream or publish");
+  if (!["publish", "status"].includes(command)) throw new Error("expected prepare, seal, status, upstream-status, upstream or publish");
   const edition = loadEdition(options);
   if (command === "status") {
     console.log(`ready=${edition !== null}`);

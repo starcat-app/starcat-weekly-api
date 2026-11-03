@@ -16,8 +16,11 @@ on:
         required: false
         type: string
   schedule:
-    # 上游 22:37 UTC 生成，通常 20 分钟内完成；延后 53 分钟避开上游失败重试窗口。
+    # 上海时间 07:30 首拉；GitHub 可能延迟上游生成，08:30–12:30 每小时补拉。
     - cron: "30 23 * * *"
+    - cron: "30 0-3 * * *"
+    # 最后一轮独立标识；仍缺稿时失败告警，不能全天静默跳过。
+    - cron: "30 4 * * *"
 
 permissions:
   contents: write
@@ -68,6 +71,7 @@ jobs:
           git fetch --no-tags --depth=1 upstream master
           printf 'UPSTREAM_COMMIT=%s\n' "$(git rev-parse FETCH_HEAD)" >> "$GITHUB_ENV"
       - name: Validate upstream publication
+        id: upstream
         env:
           DAILY_RADAR_ADMIN_API_KEY: ${{ secrets.DAILY_RADAR_ADMIN_API_KEY }}
           DAILY_RADAR_API_URL: ${{ vars.DAILY_RADAR_API_URL || 'https://starcat-api.fly.dev' }}
@@ -77,10 +81,25 @@ jobs:
           done
           node --check scripts/starcat/publish.mjs
           node --test scripts/starcat/publish.test.mjs
-          node scripts/starcat/publish.mjs upstream \
+          node scripts/starcat/publish.mjs upstream-status \
             --commit "$UPSTREAM_COMMIT" \
-            --date "${{ needs.route-source.outputs.date }}"
+            --date "${{ needs.route-source.outputs.date }}" >> "$GITHUB_OUTPUT"
+      - name: Wait for upstream publication
+        if: steps.upstream.outputs.ready == 'false'
+        env:
+          PENDING_REASON: ${{ steps.upstream.outputs.reason }}
+          EVENT_NAME: ${{ github.event_name }}
+          TRIGGER_SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          printf '### Upstream publication pending\n\n%s\n' "$PENDING_REASON" >> "$GITHUB_STEP_SUMMARY"
+          # 手动回放必须明确成功/失败；最后一轮也不能将未发布报告伪装成同步成功。
+          if [ "$EVENT_NAME" != "schedule" ] || [ "$TRIGGER_SCHEDULE" = "30 4 * * *" ]; then
+            echo "::error::$PENDING_REASON"
+            exit 1
+          fi
+          echo "::notice::$PENDING_REASON; waiting for the next scheduled compensation run"
       - name: Publish upstream snapshot
+        if: steps.upstream.outputs.ready == 'true'
         env:
           DAILY_RADAR_ADMIN_API_KEY: ${{ secrets.DAILY_RADAR_ADMIN_API_KEY }}
           DAILY_RADAR_API_URL: ${{ vars.DAILY_RADAR_API_URL || 'https://starcat-api.fly.dev' }}
@@ -95,8 +114,8 @@ jobs:
 
   generate-and-publish:
     needs: route-source
-    # 只运行受控 fork 的默认分支，避免从其他分支发布不同的生成逻辑。
-    if: needs.route-source.outputs.mode == 'starcat' && github.ref_name == github.event.repository.default_branch
+    # 自生成只响应首轮调度或手动触发；补拉轮次不能重复运行付费生成路径。
+    if: needs.route-source.outputs.mode == 'starcat' && github.ref_name == github.event.repository.default_branch && (github.event_name != 'schedule' || github.event.schedule == '30 23 * * *')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:

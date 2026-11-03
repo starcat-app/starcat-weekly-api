@@ -20,7 +20,17 @@
 
 必须替换上游同名 workflow，不能另留一个仍按 cron 调用 Qwen、创建 Issues 的旧生成流程。保留上游许可证和版权声明，以及原有 CI。
 
-来源模式由仓库变量 `DAILY_RADAR_SOURCE_MODE` 控制，取值只能是 `upstream` 或 `starcat`；缺省为 `upstream`。手动 dispatch 可用 `source_mode` 覆盖仓库变量，便于临时接管或回放。定时触发使用 UTC `30 23 * * *`（上海时间每日 07:30），晚于上游 06:37 的生成任务。触发时间不等于完成时间；仅本地模板包含 cron 不代表远端已经启用，须核对默认分支中的已推送配置。
+来源模式由仓库变量 `DAILY_RADAR_SOURCE_MODE` 控制，取值只能是 `upstream` 或 `starcat`；缺省为 `upstream`。手动 dispatch 可用 `source_mode` 覆盖仓库变量，便于临时接管或回放。
+
+定时触发均按上海日期读取当天报告，不跨日误用旧稿：
+
+| 上海时间 | UTC cron | 行为 |
+|---|---|---|
+| 每日 07:30 | `30 23 * * *` | 首轮同步；`starcat` 模式只在本轮自动生成 |
+| 每日 08:30–11:30，每小时一次 | `30 0-3 * * *` | 仅 `upstream` 模式补拉 |
+| 每日 12:30 | `30 4 * * *` | 最后一轮补拉，仍缺稿则失败提示 |
+
+上游计划 06:37 生成，但 Actions 排队会造成延迟，因此首轮未就绪不代表当日没有报告。触发时间不等于完成时间；仅本地模板包含 cron 不代表远端已经启用，须将本目录的适配器、测试与 workflow 一起安装到 fork 默认分支，并核对实际运行事件为 `schedule`。本补偿只增加同一 Actions 调度器中的重试机会，不能保证恢复被禁用或被 GitHub 丢弃的全部定时任务，也不新增外部调度器。
 
 需要的 GitHub Secrets：
 
@@ -39,7 +49,7 @@
 1. 按调度模式路由到 `upstream`，在受控 fork 中读取发布适配器。
 2. `git fetch --depth=1 https://github.com/duanyytop/agents-radar.git master`，固定 `FETCH_HEAD` 的 40 位 SHA。
 3. 只用 `git ls-tree` / `git show` 读取该 commit 下目标日期的标准 Markdown 与 `highlights.json`；不 checkout 上游工作区，不安装上游依赖，不执行上游代码。
-4. 每个出现的主题必须同时存在 `zh-Hans` 与 `en` 标准稿，否则该次同步失败。某主题当天整体缺席可以接受。
+4. 每个出现的主题必须同时存在 `zh-Hans` 与 `en` 标准稿。定时同步遇到当天无标准稿或中英文尚未配齐时，在运行摘要记录待补拉并跳过发布，等待下一轮重新 fetch；手动触发和最后一轮仍未就绪则失败。某主题当天整体缺席可以接受。正文损坏、Git 读取失败、配置或 API 错误仍直接失败，不会伪装成等待状态。
 5. `source_kind=upstream`、`source_repository=duanyytop/agents-radar`，`source_sequence` 使用上游 commit 的 Unix 秒级提交时间；后续上游修订同主题时用更高序列发布新的不可变修订。
 6. 每批至多 50 份且实际 JSON ≤8 MiB，单份 Markdown ≤1 MiB。POST 持久入队后轮询批次，只有全部发布成功才结束。
 
@@ -58,6 +68,8 @@
 ## 重跑与来源保护
 
 上游同步不修改 fork 的默认分支，也不 merge 上游代码；重复运行同一上游 commit 时，序列和完整报告摘要生成同一幂等身份。上游删除文件、删除仓库或重写历史只影响后续同步，不会删除 Starcat 已入库的不可变修订。
+
+已就绪的快照在后续补拉中仍走同一验证和幂等发布路径，以便续查未完成批次并接收上游新修订；不会因为首轮已经调用 API 就跳过后续确认。补拉轮次不运行 `starcat` 自生成任务，不额外调用付费模型。12:30 后上游才发布的内容仍需手动指定日期补拉；跨日回补不在当前窗口内。
 
 服务端现有展示优先级是 `starcat` 高于 `upstream`。因此同一天先用自生成接管后，再同步上游不会把公开指针切回上游；如果当天已接管，应从次日起切回 `upstream`。反之，当天上游已发布后切到 `starcat`，则自生成版本会按接管语义成为该日 canonical 版本。
 
@@ -93,6 +105,11 @@ node scripts/starcat/publish.mjs publish \
 上游同步的本地校验与发布：
 
 ```bash
+node scripts/starcat/publish.mjs upstream-status \
+  --checkout /path/to/agents-radar \
+  --commit <40-character-upstream-commit-sha> \
+  --date 2026-11-01
+
 node scripts/starcat/publish.mjs upstream \
   --checkout /path/to/agents-radar \
   --commit <40-character-upstream-commit-sha> \
@@ -100,6 +117,8 @@ node scripts/starcat/publish.mjs upstream \
   --sequence <upstream-commit-unix-seconds>
 ```
 
+`upstream-status` 不访问管理 API；输出 `ready=true` 表示可发布，`ready=false` 和 `reason` 表示该快照缺稿或语言未配齐。其它验证错误退出码为非零，调度器不得将其当成正常待补拉。
+
 追加 `--apply` 才会调用管理 API。`--sequence` 必须来自上游 commit 时间且不可手工改小，否则同来源修订排序会被破坏。
 
-测试使用临时 Git 仓库与模拟 Fetch，覆盖固定提交、中英文、高亮回退、来源拒绝、分片、幂等、网络与限流重试、禁止重定向、终态失败和轮询超时，不会调用生产或付费模型。
+测试使用临时 Git 仓库与模拟 Fetch，覆盖固定提交、中英文、高亮回退、来源拒绝、分片、幂等、缺稿补拉与新快照就绪、探测错误不被吞掉、网络与限流重试、禁止重定向、终态失败和轮询超时，不会调用生产或付费模型。

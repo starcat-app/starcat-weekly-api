@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   describeReport, loadEdition, loadUpstreamEdition, makeBatches, prepareGeneration, publishBatches,
   requestJSON, sealGeneration, shanghaiDate,
@@ -17,6 +18,14 @@ const repository = "starcat-app/agents-radar";
 const date = "2026-10-30";
 const now = new Date("2026-10-30T01:00:00.000Z");
 const markdown = "# AI CLI 日报\n\n这是实际生成的日报正文，包含真实的项目链接。\n\n[项目](https://github.com/example/repo)\n";
+
+/** 用真实 CLI 验证供 Actions 消费的输出，避免待补拉状态被当成发布成功。 */
+function upstreamStatus(options) {
+  return execFileSync(process.execPath, [
+    fileURLToPath(new URL("./publish.mjs", import.meta.url)), "upstream-status",
+    "--checkout", options.checkout, "--commit", options.commit, "--date", options.date,
+  ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
 
 /** 独立 Git 仓库让测试能够证明未提交内容及后续无关提交不会污染发布身份。 */
 function fixture(t) {
@@ -150,6 +159,42 @@ test("上游 dry-run 不需要序列，apply 才强制使用上游提交秒", (t
   const seconds = Number(execFileSync("git", ["-C", f.checkout, "show", "-s", "--format=%ct", commit]).toString().trim());
   const applied = makeBatches({ ...edition, sequence: seconds });
   assert.equal(applied[0].source_sequence, seconds);
+});
+
+test("上游尚无当日报告时返回待补拉，不把旧日或未知文件当成新报告", (t) => {
+  const f = fixture(t);
+  f.write("digests/2026-10-31/index.md", "# Index\n\nNot a standard report.");
+  const commit = f.commit();
+  const output = upstreamStatus({ ...f, commit, date: "2026-10-31" });
+  assert.match(output, /^ready=false\nreason=upstream snapshot contains no standard reports for this date\n$/);
+  assert.throws(() => loadUpstreamEdition({ ...f, commit, date: "2026-10-31" }), /no standard reports/);
+});
+
+test("上游只到一个语言时等待补拉，新快照配齐后就绪，旧快照保持未就绪", (t) => {
+  const f = fixture(t);
+  const pending = { ...f, commit: f.git("rev-parse", "HEAD"), date };
+  assert.match(upstreamStatus(pending), /^ready=false\nreason=upstream category ai-cli must provide both/);
+  f.write(`digests/${date}/ai-cli-en.md`, "# AI CLI Digest\n\nThe complete English report for the same edition.\n");
+  const ready = { ...pending, commit: f.commit() };
+  assert.equal(upstreamStatus(ready), "ready=true\n");
+  assert.match(upstreamStatus(pending), /^ready=false\n/);
+  const firstBatches = makeBatches(loadUpstreamEdition(ready));
+  f.write(`digests/${date}/ai-cli-en.md`, "# Uncommitted draft\n");
+  assert.equal(upstreamStatus(ready), "ready=true\n");
+  assert.deepEqual(makeBatches(loadUpstreamEdition(ready)), firstBatches);
+});
+
+test("就绪探测不吞掉损坏文稿、Git 对象、日期或 highlights 错误", (t) => {
+  const f = fixture(t);
+  f.write(`digests/${date}/ai-cli-en.md`, "# AI CLI Digest\n\nA complete English report for validation.\n");
+  const options = { ...f, commit: f.commit(), date };
+  assert.throws(() => upstreamStatus({ ...options, date: "2026-02-30" }), /edition date must be YYYY-MM-DD/);
+  assert.throws(() => upstreamStatus({ ...options, commit: "a".repeat(40) }), /cannot read the requested fixed Git object/);
+  f.write(`digests/${date}/highlights.json`, "{ invalid");
+  assert.throws(() => upstreamStatus({ ...options, commit: f.commit() }), /invalid upstream highlights JSON/);
+  f.write(`digests/${date}/highlights.json`, "{}");
+  f.write(`digests/${date}/ai-cli-en.md`, "# No body\n");
+  assert.throws(() => upstreamStatus({ ...options, commit: f.commit() }), /no publishable body/);
 });
 
 test("分批按 JSON 字节数与 50 项双重约束，重试保持幂等键", (t) => {
