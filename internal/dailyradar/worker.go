@@ -163,12 +163,16 @@ func (w *Worker) Process(ctx context.Context, job Job) error {
 	if repository == "" {
 		repository = "duanyytop/agents-radar"
 	}
+	sourceName := "agents-radar"
+	if job.Request.Source == "ai-weekly-events" {
+		sourceName = "每周 AI 大事"
+	}
 	detail := Detail{
 		Summary: Summary{ID: ReportID(c), EditionDate: c.EditionDate, Category: c.Category,
 			Period: category.Period, Title: c.Title, Summary: c.Summary, ReadingMinutes: max(1, reading),
 			Cover: c.Cover, RelatedProjectCount: len(projects), ContentLanguage: c.Language,
 			AvailableLanguages: []string{c.Language}},
-		Source: Source{Name: "agents-radar", URL: "https://github.com/" + repository + "/blob/" + c.SourceCommit + "/" + c.SourcePath,
+		Source: Source{Name: sourceName, URL: "https://github.com/" + repository + "/blob/" + c.SourceCommit + "/" + c.SourcePath,
 			Commit: c.SourceCommit, Path: c.SourcePath},
 		Markdown: c.Markdown, RelatedProjects: projects, RelatedProjectsStatus: "complete",
 		GeneratedAt: c.GeneratedAt,
