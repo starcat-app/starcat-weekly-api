@@ -37,10 +37,6 @@ help: ## 显示帮助信息
 run: ## 运行服务 (开发模式)
 	@$(GO) run $(MAIN_PATH)
 
-.PHONY: run-demo
-run-demo: ## 仅在本机运行独立日报演示，不加载 .env 或启动采集
-	@$(GO) run ./cmd/daily-radar-demo
-
 .PHONY: build
 build: ## 编译二进制到 bin/server
 	@mkdir -p $(BIN_DIR)

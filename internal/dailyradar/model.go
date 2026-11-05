@@ -158,7 +158,6 @@ var Categories = []Category{
 	{"ai-ph", "Product Hunt", "daily"}, {"ai-arxiv", "ArXiv", "daily"},
 	{"ai-hf", "Hugging Face", "weekly"}, {"ai-community", "Community", "daily"},
 	{"ai-weekly", "AI Weekly Archive", "weekly"}, {"ai-monthly", "AI Monthly Archive", "monthly"},
-	{"ai-weekly-events", "Weekly AI Highlights", "weekly"},
 }
 
 // FindCategory 确保未知文件不会凭名称猜测进入公开目录。
@@ -175,13 +174,8 @@ var commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // ValidateImport 在入队前验证数据边界；不抓取发布请求中的任何 URL。
 func ValidateImport(request *ImportRequest, coverHosts, sourceRepositories []string) error {
-	editorial := request.Source == "ai-weekly-events" && request.SourceKind == "editorial"
-	if !editorial && (request.Source != "agents-radar" || (request.SourceKind != "upstream" && request.SourceKind != "starcat")) {
+	if request.Source != "agents-radar" || (request.SourceKind != "upstream" && request.SourceKind != "starcat") {
 		return errors.New("unsupported source")
-	}
-	// 独立栏目只能由指定内容仓库写入，不能借编辑来源覆盖已有日报
-	if editorial && request.SourceRepository != "starcat-app/ai-weekly-events" {
-		return errors.New("unsupported editorial repository")
 	}
 	if request.SourceKind == "upstream" {
 		if request.SourceRepository == "" {
@@ -217,9 +211,6 @@ func ValidateImport(request *ImportRequest, coverHosts, sourceRepositories []str
 		if _, ok := FindCategory(c.Category); !ok {
 			return errors.New("unknown category")
 		}
-		if editorial != (c.Category == "ai-weekly-events") {
-			return errors.New("category is not allowed for this source")
-		}
 		if strings.TrimSpace(c.Title) == "" || len(c.Title) > 1000 || len(c.Summary) > 12000 || strings.TrimSpace(c.Markdown) == "" || len(c.Markdown) > 1<<20 {
 			return errors.New("invalid title, summary or markdown size")
 		}
@@ -253,20 +244,6 @@ func ValidateImport(request *ImportRequest, coverHosts, sourceRepositories []str
 		}
 		seen[key] = true
 	}
-	if editorial {
-		// 队列仍逐语言发布；此处保证成对入队，不宣称双语原子可见
-		for _, c := range request.Reports {
-			prefix := c.EditionDate + ":" + c.Category + ":"
-			if !seen[prefix+"en"] || !seen[prefix+"zh-Hans"] {
-				return errors.New("editorial reports require both zh-Hans and en")
-			}
-			for _, other := range request.Reports {
-				if other.EditionDate == c.EditionDate && other.SourceCommit != c.SourceCommit {
-					return errors.New("editorial translations must share a source commit")
-				}
-			}
-		}
-	}
 	return nil
 }
 
@@ -288,8 +265,5 @@ func HashJSON(value any) string {
 
 // ReportID 在语言间共享，同来源的历史稿与自生成稿也不重复占列表。
 func ReportID(c Candidate) string {
-	if c.Category == "ai-weekly-events" {
-		return fmt.Sprintf("ai-weekly-events:%s:%s", c.EditionDate, c.Category)
-	}
 	return fmt.Sprintf("agents-radar:%s:%s", c.EditionDate, c.Category)
 }

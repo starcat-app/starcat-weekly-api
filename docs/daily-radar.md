@@ -31,25 +31,3 @@ CLI 用 `git rev-parse` 固定 commit，`git ls-tree` 与 `git show` 读取对�
 - `starcat`：受控 fork 调用 DeepSeek 生成，带 `.starcat-generation.json` 来源记录与独立序列，仅作为接管路径。
 
 上游删除文件、删除仓库或重写历史只影响后续同步，不会删除已入库的不可变修订。服务端展示优先级仍为 `starcat > upstream`，表示“接管”而非最后写入优先。在线请求不运行模型或图像生成。
-
-## 每周 AI 大事编辑来源
-
-新增 `ai-weekly-events` 分类，周期 `weekly`，与历史 `ai-weekly` 归档独立。
-复用现有报告导入接口，编辑请求固定：
-
-```json
-{
-  "source": "ai-weekly-events",
-  "source_kind": "editorial",
-  "source_repository": "starcat-app/ai-weekly-events"
-}
-```
-
-`DAILY_RADAR_SOURCE_REPOSITORIES` 必须显式包含该仓库。
-每期入队需同时提供 `zh-Hans`、`en` 且同一内容提交；编辑来源只能写该分类，
-现有 agents-radar 来源不能写入它。报告 ID 为
-`ai-weekly-events:<edition_date>:ai-weekly-events`，来源名称显示「每周 AI 大事」。
-日期与固定 Git 来源校验继续沿用已有契约，不需要新增数据库 schema。
-
-队列逐语言处理，成对入队不代表双语原子可见。发布工具应轮询批次并回读两版，
-部分失败明确报告。现有日报来源与调度方式不变。
