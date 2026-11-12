@@ -29,7 +29,8 @@ func (f *fakeGitHub) GetRepo(context.Context, string, string) (*github.RepoRespo
 	if f.err != nil {
 		return nil, f.err
 	}
-	return &github.RepoResponse{ID: 123, Owner: "owner", Name: "repo", FullName: "owner/repo", HTMLURL: "https://github.com/owner/repo", Topics: []string{}}, nil
+	avatar := "https://avatars.example/owner"
+	return &github.RepoResponse{ID: 123, Owner: "owner", Name: "repo", FullName: "owner/repo", HTMLURL: "https://github.com/owner/repo", Topics: []string{}, OwnerAvatar: &avatar}, nil
 }
 func candidate(date, category, lang string) radar.Candidate {
 	return radar.Candidate{EditionDate: date, Category: category, Language: lang, Title: "AI CLI", Summary: "Summary",
@@ -114,6 +115,10 @@ func TestPublicationPaginationCacheAndWeeklyIsolation(t *testing.T) {
 	list := data[radar.ListResponse](t, r)
 	if list.Total != 2 || len(list.Items) != 1 || len(list.Items[0].AvailableLanguages) != 2 || list.NextCursor == nil || list.FeaturedID == nil {
 		t.Fatalf("%+v", list)
+	}
+	badges := list.Items[0].RelatedProjectBadges
+	if len(badges) != 1 || badges[0].GhRepoID != 123 || badges[0].FullName != "owner/repo" || badges[0].OwnerAvatar == nil || *badges[0].OwnerAvatar != "https://avatars.example/owner" {
+		t.Fatalf("summary badges: %+v", badges)
 	}
 	etag := r.Header().Get("ETag")
 	if get(t, m, "/api/v1/daily-radar/reports?language=zh-Hans&fallback=true&limit=1", etag).Code != 304 {

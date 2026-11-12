@@ -28,18 +28,19 @@ type Cover struct {
 
 // Summary 是列表唯一计数单位，不包含正文和完整关联仓库。
 type Summary struct {
-	ID                  string   `json:"id"`
-	Revision            string   `json:"revision"`
-	EditionDate         string   `json:"edition_date"`
-	Category            string   `json:"category"`
-	Period              string   `json:"period"`
-	Title               string   `json:"title"`
-	Summary             string   `json:"summary"`
-	ReadingMinutes      int      `json:"reading_minutes"`
-	Cover               Cover    `json:"cover"`
-	RelatedProjectCount int      `json:"related_project_count"`
-	ContentLanguage     string   `json:"content_language"`
-	AvailableLanguages  []string `json:"available_languages"`
+	ID                   string                `json:"id"`
+	Revision             string                `json:"revision"`
+	EditionDate          string                `json:"edition_date"`
+	Category             string                `json:"category"`
+	Period               string                `json:"period"`
+	Title                string                `json:"title"`
+	Summary              string                `json:"summary"`
+	ReadingMinutes       int                   `json:"reading_minutes"`
+	Cover                Cover                 `json:"cover"`
+	RelatedProjectCount  int                   `json:"related_project_count"`
+	RelatedProjectBadges []RelatedProjectBadge `json:"related_project_badges"`
+	ContentLanguage      string                `json:"content_language"`
+	AvailableLanguages   []string              `json:"available_languages"`
 }
 
 // Source 保存固定 Git 对象来源，而非会随 master 改动的链接。
@@ -55,6 +56,30 @@ type RelatedProject struct {
 	Repo          model.StarcatRepoCardDTO `json:"repo"`
 	EvidenceURL   string                   `json:"evidence_url"`
 	SectionAnchor *string                  `json:"section_anchor"`
+}
+
+// RelatedProjectBadge 是列表专用的轻量项目徽标：只带客户端渲染头像所需的最小字段，
+// 不把详情里的完整 StarcatRepoCardDTO 塞进每行摘要。
+type RelatedProjectBadge struct {
+	GhRepoID    int64   `json:"gh_repo_id"`
+	FullName    string  `json:"full_name"`
+	OwnerAvatar *string `json:"owner_avatar"`
+}
+
+// RelatedProjectBadges 把详情里的完整项目裁剪为有界徽标，供列表与头图一次性取用。
+func RelatedProjectBadges(projects []RelatedProject) []RelatedProjectBadge {
+	if len(projects) == 0 {
+		return []RelatedProjectBadge{}
+	}
+	limit := min(len(projects), 6)
+	badges := make([]RelatedProjectBadge, 0, limit)
+	for _, project := range projects[:limit] {
+		badges = append(badges, RelatedProjectBadge{
+			GhRepoID: project.Repo.GhRepoID, FullName: project.Repo.FullName,
+			OwnerAvatar: project.Repo.OwnerAvatar,
+		})
+	}
+	return badges
 }
 
 // Detail 的正文、封面、关联项目由同一 revision 固定。

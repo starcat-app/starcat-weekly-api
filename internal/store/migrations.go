@@ -2,9 +2,11 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/starcat-app/starcat-weekly-api/internal/dailyradar"
 	"github.com/starcat-app/starcat-weekly-api/internal/source"
 )
 
@@ -32,6 +34,7 @@ func (s *SQLiteStore) runMigrations() error {
 		{version: 1, name: "weekly multi-source foundation", apply: migrateMultiSourceFoundation},
 		{version: 2, name: "weekly issue content hash", apply: migrateWeeklyIssueContentHash},
 		{version: 3, name: "daily radar immutable publication", apply: migrateDailyRadar},
+		{version: 4, name: "daily radar summary project badges", apply: migrateDailyRadarSummaryBadges},
 	}
 	for _, migration := range migrations {
 		var applied int
@@ -56,6 +59,54 @@ func (s *SQLiteStore) runMigrations() error {
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration v%d: %w", migration.version, err)
+		}
+	}
+	return nil
+}
+
+// migrateDailyRadarSummaryBadges 把详情里的关联项目裁剪为列表徽标写回 summary_json，
+// 不重建 detail_json、不改写内容修订，只更新列表契约；目录版本一并推进以刷新旧缓存。
+func migrateDailyRadarSummaryBadges(tx *sql.Tx) error {
+	rows, err := tx.Query(`SELECT revision, summary_json, detail_json FROM daily_radar_revisions`)
+	if err != nil {
+		return fmt.Errorf("scan daily radar revisions: %w", err)
+	}
+	type update struct{ revision, summary string }
+	var updates []update
+	for rows.Next() {
+		var revision, summaryRaw, detailRaw string
+		if err := rows.Scan(&revision, &summaryRaw, &detailRaw); err != nil {
+			rows.Close()
+			return fmt.Errorf("read daily radar revision: %w", err)
+		}
+		var detail dailyradar.Detail
+		if err := json.Unmarshal([]byte(detailRaw), &detail); err != nil {
+			rows.Close()
+			return fmt.Errorf("decode daily radar detail: %w", err)
+		}
+		detail.Summary.RelatedProjectBadges = dailyradar.RelatedProjectBadges(detail.RelatedProjects)
+		summary, err := json.Marshal(detail.Summary)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("encode daily radar summary: %w", err)
+		}
+		if string(summary) != summaryRaw {
+			updates = append(updates, update{revision: revision, summary: string(summary)})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate daily radar revisions: %w", err)
+	}
+	rows.Close()
+	for _, item := range updates {
+		if _, err := tx.Exec(`UPDATE daily_radar_revisions SET summary_json=? WHERE revision=?`, item.summary, item.revision); err != nil {
+			return fmt.Errorf("update daily radar summary: %w", err)
+		}
+	}
+	if len(updates) > 0 {
+		if _, err := tx.Exec(`UPDATE daily_radar_state SET revision=revision+1 WHERE id=1`); err != nil {
+			return fmt.Errorf("bump daily radar catalog: %w", err)
 		}
 	}
 	return nil

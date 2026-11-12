@@ -92,3 +92,13 @@ func TestRepairRadarSourceRepositories(t *testing.T) {
 		t.Fatalf("repair not idempotent: changed=%d err=%v", changed, err)
 	}
 }
+
+func mustRepoCard(t *testing.T) radar.RelatedProject {
+	t.Helper()
+	avatar := "https://avatars.example/owner"
+	project := radar.RelatedProject{}
+	project.Repo.GhRepoID = 123
+	project.Repo.FullName = "owner/repo"
+	project.Repo.OwnerAvatar = &avatar
+	return project
+}
